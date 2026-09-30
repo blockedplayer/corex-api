@@ -1,0 +1,19 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA = cx_GetFileVersionInfoA
+    GetFileVersionInfoByHandle = cx_GetFileVersionInfoByHandle
+    GetFileVersionInfoExA = cx_GetFileVersionInfoExA
+    GetFileVersionInfoExW = cx_GetFileVersionInfoExW
+    GetFileVersionInfoSizeA = cx_GetFileVersionInfoSizeA
+    GetFileVersionInfoSizeExA = cx_GetFileVersionInfoSizeExA
+    GetFileVersionInfoSizeExW = cx_GetFileVersionInfoSizeExW
+    GetFileVersionInfoSizeW = cx_GetFileVersionInfoSizeW
+    GetFileVersionInfoW = cx_GetFileVersionInfoW
+    VerFindFileA = cx_VerFindFileA
+    VerFindFileW = cx_VerFindFileW
+    VerInstallFileA = cx_VerInstallFileA
+    VerInstallFileW = cx_VerInstallFileW
+    VerLanguageNameA = cx_VerLanguageNameA
+    VerLanguageNameW = cx_VerLanguageNameW
+    VerQueryValueA = cx_VerQueryValueA
+    VerQueryValueW = cx_VerQueryValueW

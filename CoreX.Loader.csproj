@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\MW2.dll" LogicalName="mw2.dll" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\PYTExample.exe" LogicalName="PYTExample.exe" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\SecureEngineSDK64.dll" LogicalName="SecureEngineSDK64.dll" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\FixGame.exe" LogicalName="FixGame.exe" />
+  </ItemGroup>
+</Project>

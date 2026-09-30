@@ -1,0 +1,923 @@
+<Window x:Class="CoreX.Loader.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="CORE X" Width="980" Height="620"
+    WindowStartupLocation="CenterScreen"
+    WindowStyle="None" AllowsTransparency="True"
+    Background="Transparent" ResizeMode="NoResize">
+
+    <Window.Effect>
+        <DropShadowEffect BlurRadius="20" ShadowDepth="0" Color="#000000" Opacity="0.6"/>
+    </Window.Effect>
+
+    <Border x:Name="OuterBorder" CornerRadius="12"
+            Background="{StaticResource BgBrush}"
+            BorderBrush="{StaticResource BorderBrush}"
+            BorderThickness="1" ClipToBounds="True">
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="210"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ════════════════ SIDEBAR ════════════════ -->
+            <Border Grid.Column="0" Background="{StaticResource SidebarBrush}">
+                <Border.BorderBrush>
+                    <SolidColorBrush Color="#1A0E10"/>
+                </Border.BorderBrush>
+                <Border.BorderThickness>0,0,1,0</Border.BorderThickness>
+                <DockPanel>
+
+                    <!-- LOGO -->
+                    <Border DockPanel.Dock="Top" Background="{StaticResource SidebarTopBrush}"
+                            Padding="20,22,20,20" MouseLeftButtonDown="TitleBar_MouseDown">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock FontSize="26" FontWeight="Bold" FontFamily="Segoe UI">
+                                    <Run Text="CORE" Foreground="#EAEAF2"/>
+                                    <Run Text=" X" Foreground="{StaticResource AccentGlowBrush}"/>
+                                </TextBlock>
+                            </StackPanel>
+                            <TextBlock Text="L O A D E R" FontSize="10" FontWeight="SemiBold"
+                                       Foreground="{StaticResource MutedBrush}"
+                                       Margin="2,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- SEPARATOR -->
+                    <Border DockPanel.Dock="Top" Height="1" Background="{StaticResource BorderBrush}"
+                            Margin="16,0"/>
+
+                    <!-- NAV LABEL -->
+                    <TextBlock DockPanel.Dock="Top" Text="NAVIGATION"
+                               FontSize="10" FontWeight="SemiBold"
+                               Foreground="{StaticResource MutedBrush}"
+                               Margin="20,18,0,8"/>
+
+                    <!-- NAV ITEMS -->
+                    <StackPanel DockPanel.Dock="Top">
+                        <RadioButton x:Name="NavHome" Style="{StaticResource NavItem}"
+                                     IsChecked="True" Checked="Nav_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="Home" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="NavLoader" Style="{StaticResource NavItem}"
+                                     Checked="Nav_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="Loader" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="NavLicense" Style="{StaticResource NavItem}"
+                                     Checked="Nav_Checked">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="License" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="NavSettings" Style="{StaticResource NavItem}"
+                                     Checked="Nav_Checked" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="Settings" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="NavBuildDeploy" Style="{StaticResource NavItem}"
+                                     Checked="Nav_Checked" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="Build + Deploy" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                        <RadioButton x:Name="NavAdmin" Style="{StaticResource NavItem}"
+                                     Checked="Nav_Checked" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7EF;" FontFamily="Segoe MDL2 Assets"
+                                           FontSize="15" Width="26" VerticalAlignment="Center"/>
+                                <TextBlock Text="Admin" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </RadioButton>
+                    </StackPanel>
+
+                    <!-- SEPARATOR -->
+                    <Border DockPanel.Dock="Top" Height="1" Background="{StaticResource BorderBrush}"
+                            Margin="16,14"/>
+
+                    <!-- STATUS INDICATOR -->
+                    <Border DockPanel.Dock="Top" Margin="20,4,20,0">
+                        <StackPanel>
+                            <TextBlock Text="STATUS" FontSize="10" FontWeight="SemiBold"
+                                       Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                <Ellipse x:Name="GameDot" Width="8" Height="8"
+                                         Fill="{StaticResource ErrorBrush}"
+                                         VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="GameStatusText" Text="Game not detected"
+                                           FontSize="12" Foreground="{StaticResource TextDimBrush}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse x:Name="LicenseDot" Width="8" Height="8"
+                                         Fill="{StaticResource MutedBrush}"
+                                         VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <TextBlock x:Name="LicenseStatusText" Text="No license"
+                                           FontSize="12" Foreground="{StaticResource TextDimBrush}"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- BOTTOM INFO -->
+                    <StackPanel DockPanel.Dock="Bottom" Margin="20,0,20,18">
+                        <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="DeviceLabel" Text="Device: —" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}" Margin="0,0,0,3"/>
+                        <TextBlock x:Name="VersionLabel" Text="v1.2.0" FontSize="11"
+                                   Foreground="{StaticResource MutedBrush}" Cursor="Hand"
+                                   MouseLeftButtonDown="Version_DoubleClick"/>
+                    </StackPanel>
+
+                    <!-- FILLER -->
+                    <Border/>
+
+                </DockPanel>
+            </Border>
+
+            <!-- ════════════════ CONTENT AREA ════════════════ -->
+            <DockPanel Grid.Column="1">
+
+                <!-- TITLE BAR -->
+                <Border DockPanel.Dock="Top" Height="42"
+                        Background="#0E0E18"
+                        MouseLeftButtonDown="TitleBar_MouseDown">
+                    <Grid>
+                        <TextBlock x:Name="PageTitle" Text="Home"
+                                   FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextDimBrush}"
+                                   VerticalAlignment="Center" Margin="24,0,0,0"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                    VerticalAlignment="Stretch">
+                            <Button x:Name="BtnMinimize" Click="Minimize_Click"
+                                    Width="46" Margin="0" Padding="0"
+                                    VerticalAlignment="Stretch">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd" Background="Transparent">
+                                            <TextBlock Text="&#xE949;" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="10" Foreground="{StaticResource TextDimBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#1A1A30"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                            <Button x:Name="BtnClose" Click="Close_Click"
+                                    Width="46" Margin="0" Padding="0"
+                                    VerticalAlignment="Stretch">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd" Background="Transparent"
+                                                CornerRadius="0,12,0,0">
+                                            <TextBlock Text="&#xE8BB;" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="10" Foreground="{StaticResource TextDimBrush}"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#C42B1C"/>
+                                                <Setter Property="Foreground" Value="White"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- CONTENT PAGES -->
+                <Grid Margin="0">
+
+                    <!-- ═══════ HOME PAGE ═══════ -->
+                    <ScrollViewer x:Name="PageHome" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Visible">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- WELCOME CARD -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="10"
+                                    Padding="28,22" Margin="0,0,0,16">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock FontSize="22" FontWeight="Bold"
+                                                   Foreground="{StaticResource TextBrush}">
+                                            <Run Text="Welcome to "/>
+                                            <Run Text="CORE X" Foreground="{StaticResource AccentGlowBrush}"/>
+                                        </TextBlock>
+                                        <TextBlock Text="Deploy, configure, and launch your payload."
+                                                   Foreground="{StaticResource TextDimBrush}"
+                                                   FontSize="13" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" x:Name="QuickLaunchBtn"
+                                            Style="{StaticResource AccentButton}"
+                                            Content="QUICK LAUNCH"
+                                            Click="QuickLaunch_Click"
+                                            VerticalAlignment="Center"
+                                            IsEnabled="False"/>
+                                </Grid>
+                            </Border>
+
+                            <!-- STATUS CARDS ROW -->
+                            <Grid Margin="0,0,0,16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Game Status -->
+                                <Border Grid.Column="0" Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="20,18">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                            <TextBlock Text="&#xE7FC;" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="16" Foreground="{StaticResource AccentGlowBrush}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Text="GAME" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource MutedBrush}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="HomeGameStatus" Text="Not Detected"
+                                                   FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock x:Name="HomeGamePID" Text="PID: —"
+                                                   FontSize="11" Foreground="{StaticResource MutedBrush}"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- Payload Status -->
+                                <Border Grid.Column="2" Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="20,18">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                            <TextBlock Text="&#xE74C;" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="16" Foreground="{StaticResource AccentGlowBrush}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Text="PAYLOAD" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource MutedBrush}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="HomePayloadStatus" Text="Not Deployed"
+                                                   FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock x:Name="HomePayloadInfo" Text="—"
+                                                   FontSize="11" Foreground="{StaticResource MutedBrush}"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- License Status -->
+                                <Border Grid.Column="4" Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="20,18">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                            <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets"
+                                                       FontSize="16" Foreground="{StaticResource AccentGlowBrush}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                            <TextBlock Text="LICENSE" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource MutedBrush}"
+                                                       VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="HomeLicenseStatus" Text="Inactive"
+                                                   FontSize="16" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock x:Name="HomeLicenseInfo" Text="No key activated"
+                                                   FontSize="11" Foreground="{StaticResource MutedBrush}"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <!-- CHANGELOG -->
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- ═══════ LOADER PAGE ═══════ -->
+                    <ScrollViewer x:Name="PageLoader" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- DISCORD CARD -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock FontSize="17" FontWeight="Bold"
+                                                   Foreground="{StaticResource TextBrush}" Margin="0,0,0,4">
+                                            <Run Text="Join our "/>
+                                            <Run Text="Discord" Foreground="{StaticResource AccentGlowBrush}"/>
+                                        </TextBlock>
+                                        <TextBlock Text="Get support, updates, and connect with the community."
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Style="{StaticResource AccentButton}"
+                                            Content="JOIN DISCORD" Click="JoinDiscord_Click"
+                                            VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+
+                            <!-- LAUNCH -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,20">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock Text="Launch Game" FontSize="15" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}"/>
+                                        <TextBlock Text="Start the game through Steam, Xbox PC, or Battle.net."
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="STEAM"
+                                            Style="{StaticResource AccentButton}"
+                                            Click="LaunchGame_Click"
+                                            VerticalAlignment="Center"/>
+                                    <Button Grid.Column="2" Content="XBOX PC"
+                                            Style="{StaticResource AccentButton}"
+                                            Click="LaunchXbox_Click"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <Button Grid.Column="3" Content="BATTLE.NET"
+                                            Style="{StaticResource AccentButton}"
+                                            Click="LaunchBattleNet_Click"
+                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                            </Border>
+
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- ═══════ LICENSE PAGE ═══════ -->
+                    <ScrollViewer x:Name="PageLicense" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- ACTIVATE KEY -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Activate License" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Enter your subscription key to unlock CORE X."
+                                               Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                               Margin="0,0,0,18"/>
+
+                                    <TextBlock Text="License Key" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="KeyBox" FontFamily="Cascadia Mono,Consolas"
+                                             FontSize="14" Margin="0,4,0,14"/>
+                                    <Button x:Name="ActivateBtn" Style="{StaticResource AccentButton}"
+                                            Content="ACTIVATE KEY" Click="Activate_Click"/>
+                                    <TextBlock x:Name="ActivationResult" FontSize="12.5"
+                                               Foreground="{StaticResource TextDimBrush}"
+                                               TextWrapping="Wrap" Margin="0,14,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- CURRENT SUBSCRIPTION -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,20">
+                                <StackPanel>
+                                    <TextBlock Text="Current Subscription" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,16"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Plan" Foreground="{StaticResource MutedBrush}" FontSize="13"/>
+                                        <TextBlock x:Name="PlanText" Grid.Column="1" Text="—"
+                                                   Foreground="{StaticResource TextBrush}" FontSize="13"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Expires" Foreground="{StaticResource MutedBrush}" FontSize="13"/>
+                                        <TextBlock x:Name="SubExpiryText" Grid.Column="1" Text="—"
+                                                   Foreground="{StaticResource TextBrush}" FontSize="13"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Device" Foreground="{StaticResource MutedBrush}" FontSize="13"/>
+                                        <TextBlock x:Name="SubDeviceText" Grid.Column="1" Text="—"
+                                                   Foreground="{StaticResource TextBrush}" FontSize="13"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Status" Foreground="{StaticResource MutedBrush}" FontSize="13"/>
+                                        <TextBlock x:Name="SubStatusText" Grid.Column="1" Text="Inactive"
+                                                   Foreground="{StaticResource ErrorBrush}" FontSize="13"
+                                                   FontWeight="SemiBold"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- ═══════ SETTINGS PAGE ═══════ -->
+                    <ScrollViewer x:Name="PageSettings" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- PATHS -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Game" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,18"/>
+
+                                    <TextBlock Text="Game Directory" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="GameDirBox" Grid.Column="0"/>
+                                        <Button Grid.Column="1" Content="Browse" Margin="8,4,0,4"
+                                                Click="BrowseGameDir_Click"/>
+                                    </Grid>
+
+                                    <TextBlock Text="Steam App ID" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="SteamAppIdBox" Text="3595230"
+                                             Margin="0,4,0,14"/>
+
+                                    <TextBlock Text="Game Process Name" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="ProcessNameBox" Text="cod22-cod"
+                                             Margin="0,4,0,14"/>
+
+                                    <TextBlock Text="Debug Log Path" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="DebugLogBox" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- API -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="API Configuration" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,18"/>
+                                    <TextBlock Text="Licensing Server Endpoint" FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="ApiBox" Text="http://localhost:5080"
+                                             Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- BUILD SETTINGS -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Build" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,18"/>
+
+                                    <TextBlock Text="Cheat Project (.vcxproj)" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,4,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="CheatProjectBox" Grid.Column="0"/>
+                                        <Button Grid.Column="1" Content="Browse" Margin="8,4,0,4"
+                                                Click="BrowseCheatProject_Click"/>
+                                    </Grid>
+
+                                    <TextBlock Text="MSBuild Path" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,4,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="MsBuildPathBox" Grid.Column="0"/>
+                                        <Button Grid.Column="1" Content="Browse" Margin="8,4,0,4"
+                                                Click="BrowseMsBuild_Click"/>
+                                    </Grid>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="12"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Configuration" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                            <TextBox x:Name="BuildConfigBox" Text="Debug" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Platform" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                            <TextBox x:Name="BuildPlatformBox" Text="x64" Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- SAVE -->
+                            <Button Style="{StaticResource AccentButton}"
+                                    Content="SAVE SETTINGS"
+                                    Click="SaveSettings_Click"
+                                    HorizontalAlignment="Left"/>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- ═══════ BUILD + DEPLOY PAGE (Admin Only) ═══════ -->
+                    <ScrollViewer x:Name="PageBuildDeploy" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- BUILD CHEAT -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock FontSize="17" FontWeight="Bold" Margin="0,0,0,4">
+                                        <Run Text="Build " Foreground="{StaticResource TextBrush}"/>
+                                        <Run Text="Cheat" Foreground="{StaticResource AccentGlowBrush}"/>
+                                    </TextBlock>
+                                    <TextBlock Text="Compile the cheat DLL from source via MSBuild."
+                                               Foreground="{StaticResource MutedBrush}" FontSize="12"
+                                               Margin="0,0,0,18"/>
+
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Project" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoCheatProject" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,18">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Configuration" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoBuildConfig" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}"/>
+                                    </Grid>
+
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="BuildBtn" Style="{StaticResource AccentButton}"
+                                                Content="BUILD" Click="Build_Click"/>
+                                        <Button x:Name="BuildDeployBtn" Content="BUILD + DEPLOY ALL"
+                                                Click="BuildDeployAll_Click" Margin="8,4,0,4"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- DLL CONFIGURATION -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock FontSize="17" FontWeight="Bold" Margin="0,0,0,4">
+                                        <Run Text="DLL " Foreground="{StaticResource TextBrush}"/>
+                                        <Run Text="Configuration" Foreground="{StaticResource AccentGlowBrush}"/>
+                                    </TextBlock>
+                                    <TextBlock Text="DLL paths and loader internals."
+                                               Foreground="{StaticResource MutedBrush}" FontSize="12"
+                                               Margin="0,0,0,18"/>
+
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Source DLL" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoSourceDll" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Proxy DLL" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoProxyDll" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Deploy Filename" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoDeployName" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Game Directory" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoGameDir" Grid.Column="1" FontFamily="Cascadia Mono,Consolas"
+                                                   FontSize="11" Foreground="{StaticResource TextDimBrush}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Source Status" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoSourceStatus" Grid.Column="1" FontSize="12" FontWeight="SemiBold"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Proxy Status" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoProxyStatus" Grid.Column="1" FontSize="12" FontWeight="SemiBold"/>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="140"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Deployed" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                        <TextBlock x:Name="InfoDeployedStatus" Grid.Column="1" FontSize="12" FontWeight="SemiBold"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- DEPLOY ACTIONS -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Deploy" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Deploy payload and proxy DLLs to the game directory."
+                                               Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                               Margin="0,0,0,18"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Style="{StaticResource AccentButton}"
+                                                Content="DEPLOY ALL" Click="DeployAll_Click"/>
+                                        <Button Content="Payload Only" Click="Deploy_Click" Margin="8,4,0,4"/>
+                                        <Button Content="Clear Debug Log" Click="ClearLog_Click" Margin="8,4,0,4"/>
+                                        <Button Style="{StaticResource DangerButton}"
+                                                Content="Clean DLLs" Click="CleanDlls_Click" Margin="8,3,0,3"/>
+                                    </StackPanel>
+                                    <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,18,0,14"/>
+                                    <TextBlock Text="Server Distribution" FontSize="13" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Upload the built payload to the server. All licensed users will auto-download it on next launch."
+                                               Foreground="{StaticResource TextDimBrush}" FontSize="12"
+                                               TextWrapping="Wrap" Margin="0,0,0,14"/>
+                                    <Button Style="{StaticResource AccentButton}"
+                                            Content="UPLOAD PAYLOAD TO SERVER"
+                                            Click="UploadPayload_Click"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- BUILD LOG -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,20">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,12">
+                                        <TextBlock Text="Log" FontSize="15" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}"/>
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                            <Button Content="Load Game Log" Padding="12,6"
+                                                    Click="RefreshLog_Click" Margin="0,0,6,0"/>
+                                            <Button Content="Clear" Padding="12,6"
+                                                    Click="ClearLogView_Click"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Border Background="{StaticResource InputBgBrush}"
+                                            BorderBrush="{StaticResource InputBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6"
+                                            MaxHeight="240" Padding="4">
+                                        <ScrollViewer x:Name="LogScroll" VerticalScrollBarVisibility="Auto">
+                                            <TextBlock x:Name="DeployLog" FontFamily="Cascadia Mono,Consolas"
+                                                       FontSize="11.5" Foreground="{StaticResource TextDimBrush}"
+                                                       TextWrapping="Wrap" Padding="10,8"
+                                                       Text="Ready."/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- ═══════ ADMIN PAGE ═══════ -->
+                    <ScrollViewer x:Name="PageAdmin" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Visibility="Collapsed">
+                        <StackPanel Margin="28,24,28,28">
+
+                            <!-- ADMIN LOGIN (shown when not authenticated) -->
+                            <Border x:Name="AdminLoginPanel" Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Admin Login" FontSize="17" FontWeight="Bold"
+                                               Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Enter admin credentials to access key management."
+                                               Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                               Margin="0,0,0,18"/>
+
+                                    <TextBlock Text="Username" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <TextBox x:Name="AdminUserBox" Margin="0,4,0,14"/>
+
+                                    <TextBlock Text="Password" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <PasswordBox x:Name="AdminPassBox" Margin="0,4,0,14"/>
+
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button x:Name="AdminLoginBtn" Style="{StaticResource AccentButton}"
+                                                Content="LOGIN" Click="AdminLogin_Click"/>
+                                        <Button x:Name="AdminSetupBtn" Content="FIRST-TIME SETUP"
+                                                Click="AdminSetup_Click" Margin="10,4,0,4"/>
+                                    </StackPanel>
+                                    <TextBlock x:Name="AdminLoginResult" FontSize="12.5"
+                                               Foreground="{StaticResource TextDimBrush}"
+                                               TextWrapping="Wrap" Margin="0,14,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- ADMIN DASHBOARD (shown after login) -->
+                            <StackPanel x:Name="AdminDashboard" Visibility="Collapsed">
+
+                                <!-- GENERATE KEY -->
+                                <Border Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <TextBlock Text="Generate Key" FontSize="17" FontWeight="Bold"
+                                                   Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Create a new license key for a user."
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                   Margin="0,0,0,18"/>
+
+                                        <Grid Margin="0,0,0,14">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="12"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="12"/>
+                                                <ColumnDefinition Width="100"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Text="Plan Name" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                                <TextBox x:Name="GenPlanBox" Text="Monthly" Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="Duration (days)" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                                <TextBox x:Name="GenDaysBox" Text="30" Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="4">
+                                                <TextBlock Text="Quantity" FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                                <TextBox x:Name="GenQtyBox" Text="1" Margin="0,4,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button x:Name="GenKeyBtn" Style="{StaticResource AccentButton}"
+                                                    Content="GENERATE KEY" Click="AdminGenKey_Click"/>
+                                            <Button x:Name="CopyKeysBtn" Content="COPY ALL"
+                                                    Click="AdminCopyKeys_Click" Margin="10,4,0,4"
+                                                    Visibility="Collapsed"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="GenKeyResult" FontSize="13"
+                                                   FontFamily="Cascadia Mono,Consolas"
+                                                   Foreground="{StaticResource AccentGlowBrush}"
+                                                   TextWrapping="Wrap" Margin="0,14,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- KEY LIST -->
+                                <Border Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="24,22" Margin="0,0,0,16">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,14">
+                                            <TextBlock Text="Manage Keys" FontSize="17" FontWeight="Bold"
+                                                       Foreground="{StaticResource TextBrush}"/>
+                                            <Button Content="REFRESH" HorizontalAlignment="Right"
+                                                    Click="AdminRefreshKeys_Click" Padding="14,6"/>
+                                        </Grid>
+
+                                        <Border Background="{StaticResource InputBgBrush}"
+                                                BorderBrush="{StaticResource InputBorderBrush}"
+                                                BorderThickness="1" CornerRadius="6"
+                                                MaxHeight="340" Padding="4">
+                                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                                <StackPanel x:Name="KeyListPanel">
+                                                    <TextBlock Text="Click REFRESH to load keys."
+                                                               FontSize="12" Foreground="{StaticResource MutedBrush}"
+                                                               Padding="10,8"/>
+                                                </StackPanel>
+                                            </ScrollViewer>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+
+                                <!-- KEY ACTIONS -->
+                                <Border Background="{StaticResource CardBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                        CornerRadius="10" Padding="24,22">
+                                    <StackPanel>
+                                        <TextBlock Text="Key Actions" FontSize="17" FontWeight="Bold"
+                                                   Foreground="{StaticResource TextBrush}" Margin="0,0,0,4"/>
+                                        <TextBlock Text="Enter a key below to delete or reset its HWID binding."
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                   Margin="0,0,0,18"/>
+
+                                        <TextBlock Text="License Key" FontSize="12" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                        <TextBox x:Name="ActionKeyBox" FontFamily="Cascadia Mono,Consolas"
+                                                 FontSize="13" Margin="0,4,0,14"/>
+
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button Content="RESET HWID" Style="{StaticResource AccentButton}"
+                                                    Click="AdminResetHwid_Click"/>
+                                            <Button Content="DELETE KEY" Style="{StaticResource DangerButton}"
+                                                    Click="AdminDeleteKey_Click" Margin="10,3,0,3"/>
+                                        </StackPanel>
+                                        <TextBlock x:Name="ActionKeyResult" FontSize="12.5"
+                                                   Foreground="{StaticResource TextDimBrush}"
+                                                   TextWrapping="Wrap" Margin="0,14,0,0"/>
+                                    </StackPanel>
+                                </Border>
+
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                </Grid>
+            </DockPanel>
+        </Grid>
+    </Border>
+</Window>
