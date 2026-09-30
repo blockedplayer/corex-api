@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "CoreX.Api": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:50396;http://localhost:50397"
+    }
+  }
+}

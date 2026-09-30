@@ -14,6 +14,8 @@ var adminFile = Path.Combine(dataDir, "admin.json");
 
 await SeedDataAsync(licensesFile, adminFile);
 
+var releaseFile = Path.Combine(dataDir, "release.json");
+
 var store = new LicenseStore(licensesFile);
 var adminStore = new AdminStore(adminFile);
 
@@ -29,8 +31,29 @@ app.MapPost("/api/license/activate", async (ActivateRequest req) =>
     return result.Success ? Results.Ok(result) : Results.BadRequest(result);
 });
 
-app.MapGet("/api/releases/current", () =>
-    Results.Ok(new UpdateResponse("1.0.0", "Initial CORE X Loader release.")));
+app.MapGet("/api/releases/current", async () =>
+{
+    if (File.Exists(releaseFile))
+    {
+        var json = await File.ReadAllTextAsync(releaseFile);
+        var info = JsonSerializer.Deserialize<ReleaseInfo>(json);
+        if (info is not null) return Results.Ok(info);
+    }
+    return Results.Ok(new ReleaseInfo("1.0.0", null));
+});
+
+app.MapPost("/api/admin/release", async (ReleaseInfo info, HttpRequest http) =>
+{
+    if (!await AuthorizeAdmin(http, adminStore))
+        return Results.Json(new { message = "Unauthorized." }, statusCode: 401);
+
+    if (string.IsNullOrWhiteSpace(info.Version))
+        return Results.BadRequest(new { message = "Version is required." });
+
+    var json = JsonSerializer.Serialize(info, new JsonSerializerOptions { WriteIndented = true });
+    await File.WriteAllTextAsync(releaseFile, json);
+    return Results.Ok(new { message = $"Release updated to v{info.Version}." });
+});
 
 app.MapPost("/api/admin/setup", async (AdminSetupRequest req) =>
 {
@@ -169,7 +192,7 @@ static string RandomKey(int length)
 record ActivateRequest(string Key, string DeviceId);
 record CreateKeyRequest(int Days, string? Plan);
 record LicenseResponse(bool Success, string Message, string? Plan, DateTime? ExpiresAt);
-record UpdateResponse(string Version, string Notes);
+record ReleaseInfo(string Version, string? Url);
 record License(string Key, string Plan, int DurationDays, DateTime? ExpiresAt, string? DeviceId);
 record AdminSetupRequest(string Username, string Password);
 record AdminLoginRequest(string? Username, string? Password);
