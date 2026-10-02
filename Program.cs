@@ -1,23 +1,42 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-var dataDir = Environment.GetEnvironmentVariable("DATA_DIR")
+var dbUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
+
+ILicenseStore store;
+IAdminStore adminStore;
+
+if (!string.IsNullOrEmpty(dbUrl))
+{
+    var connStr = ConvertDatabaseUrl(dbUrl);
+    await InitPostgresAsync(connStr);
+    store = new PgLicenseStore(connStr);
+    adminStore = new PgAdminStore(connStr);
+    await SeedPostgresAsync(connStr);
+}
+else
+{
+    var dataDir = Environment.GetEnvironmentVariable("DATA_DIR")
+        ?? Path.Combine(AppContext.BaseDirectory, "data");
+    Directory.CreateDirectory(dataDir);
+
+    var licensesFile = Path.Combine(dataDir, "licenses.json");
+    var adminFile = Path.Combine(dataDir, "admin.json");
+    await SeedFileDataAsync(licensesFile, adminFile);
+
+    store = new FileLicenseStore(licensesFile);
+    adminStore = new FileAdminStore(adminFile);
+}
+
+var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
     ?? Path.Combine(AppContext.BaseDirectory, "data");
-Directory.CreateDirectory(dataDir);
-
-var licensesFile = Path.Combine(dataDir, "licenses.json");
-var adminFile = Path.Combine(dataDir, "admin.json");
-
-await SeedDataAsync(licensesFile, adminFile);
-
-var releaseFile = Path.Combine(dataDir, "release.json");
-
-var store = new LicenseStore(licensesFile);
-var adminStore = new AdminStore(adminFile);
+Directory.CreateDirectory(releaseDir);
+var releaseFile = Path.Combine(releaseDir, "release.json");
 
 app.MapGet("/", () => Results.Ok(new { service = "CoreX License API", status = "online" }));
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -127,6 +146,15 @@ app.MapPost("/api/admin/keys/{key}/reset-hwid", async (string key, HttpRequest h
         : Results.NotFound(new { message = "Key not found." });
 });
 
+app.MapDelete("/api/admin/keys", async (HttpRequest http) =>
+{
+    if (!await AuthorizeAdmin(http, adminStore))
+        return Results.Json(new { message = "Unauthorized." }, statusCode: 401);
+
+    var count = await store.DeleteAllAsync();
+    return Results.Ok(new { message = $"{count} key(s) deleted." });
+});
+
 app.MapGet("/api/admin/backup", async (HttpRequest http) =>
 {
     if (!await AuthorizeAdmin(http, adminStore))
@@ -139,33 +167,9 @@ app.MapGet("/api/admin/backup", async (HttpRequest http) =>
 var port = Environment.GetEnvironmentVariable("PORT") ?? "5080";
 app.Run($"http://0.0.0.0:{port}");
 
-static async Task SeedDataAsync(string licensesFile, string adminFile)
-{
-    if (!File.Exists(adminFile))
-    {
-        var user = Environment.GetEnvironmentVariable("ADMIN_USER");
-        var pass = Environment.GetEnvironmentVariable("ADMIN_PASS");
-        if (!string.IsNullOrEmpty(user) && !string.IsNullOrEmpty(pass))
-        {
-            var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
-            var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(pass + salt)));
-            var creds = new AdminCredentials(user, hash, salt);
-            var json = JsonSerializer.Serialize(creds, new JsonSerializerOptions { WriteIndented = true });
-            await File.WriteAllTextAsync(adminFile, json);
-        }
-    }
+// ─── helpers ───
 
-    if (!File.Exists(licensesFile))
-    {
-        var seed = Environment.GetEnvironmentVariable("SEED_LICENSES");
-        if (!string.IsNullOrEmpty(seed))
-        {
-            await File.WriteAllTextAsync(licensesFile, seed);
-        }
-    }
-}
-
-static async Task<bool> AuthorizeAdmin(HttpRequest http, AdminStore adminStore)
+static async Task<bool> AuthorizeAdmin(HttpRequest http, IAdminStore adminStore)
 {
     var user = http.Headers["X-Admin-User"].FirstOrDefault() ?? "";
     var pass = http.Headers["X-Admin-Pass"].FirstOrDefault() ?? "";
@@ -189,6 +193,97 @@ static string RandomKey(int length)
     return sb.ToString();
 }
 
+static string ConvertDatabaseUrl(string url)
+{
+    if (url.StartsWith("postgres://") || url.StartsWith("postgresql://"))
+    {
+        var uri = new Uri(url);
+        var userInfo = uri.UserInfo.Split(':');
+        var host = uri.Host;
+        var port = uri.Port > 0 ? uri.Port : 5432;
+        var db = uri.AbsolutePath.TrimStart('/');
+        var user = userInfo[0];
+        var pass = userInfo.Length > 1 ? userInfo[1] : "";
+        return $"Host={host};Port={port};Database={db};Username={user};Password={pass};SSL Mode=Require;Trust Server Certificate=true";
+    }
+    return url;
+}
+
+static async Task InitPostgresAsync(string connStr)
+{
+    await using var conn = new NpgsqlConnection(connStr);
+    await conn.OpenAsync();
+
+    await using var cmd = conn.CreateCommand();
+    cmd.CommandText = """
+        CREATE TABLE IF NOT EXISTS licenses (
+            key TEXT PRIMARY KEY,
+            plan TEXT NOT NULL DEFAULT 'Standard',
+            duration_days INT NOT NULL DEFAULT 30,
+            expires_at TIMESTAMPTZ,
+            device_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS admin (
+            id INT PRIMARY KEY DEFAULT 1,
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL
+        );
+        """;
+    await cmd.ExecuteNonQueryAsync();
+}
+
+static async Task SeedPostgresAsync(string connStr)
+{
+    var user = Environment.GetEnvironmentVariable("ADMIN_USER");
+    var pass = Environment.GetEnvironmentVariable("ADMIN_PASS");
+    if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) return;
+
+    await using var conn = new NpgsqlConnection(connStr);
+    await conn.OpenAsync();
+
+    await using var check = conn.CreateCommand();
+    check.CommandText = "SELECT COUNT(*) FROM admin";
+    var count = (long)(await check.ExecuteScalarAsync())!;
+    if (count > 0) return;
+
+    var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+    var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(pass + salt)));
+
+    await using var insert = conn.CreateCommand();
+    insert.CommandText = "INSERT INTO admin (id, username, password_hash, salt) VALUES (1, @u, @h, @s) ON CONFLICT DO NOTHING";
+    insert.Parameters.AddWithValue("u", user);
+    insert.Parameters.AddWithValue("h", hash);
+    insert.Parameters.AddWithValue("s", salt);
+    await insert.ExecuteNonQueryAsync();
+}
+
+static async Task SeedFileDataAsync(string licensesFile, string adminFile)
+{
+    if (!File.Exists(adminFile))
+    {
+        var user = Environment.GetEnvironmentVariable("ADMIN_USER");
+        var pass = Environment.GetEnvironmentVariable("ADMIN_PASS");
+        if (!string.IsNullOrEmpty(user) && !string.IsNullOrEmpty(pass))
+        {
+            var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+            var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(pass + salt)));
+            var creds = new AdminCredentials(user, hash, salt);
+            var json = JsonSerializer.Serialize(creds, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(adminFile, json);
+        }
+    }
+
+    if (!File.Exists(licensesFile))
+    {
+        var seed = Environment.GetEnvironmentVariable("SEED_LICENSES");
+        if (!string.IsNullOrEmpty(seed))
+            await File.WriteAllTextAsync(licensesFile, seed);
+    }
+}
+
+// ─── records ───
+
 record ActivateRequest(string Key, string DeviceId);
 record CreateKeyRequest(int Days, string? Plan);
 record LicenseResponse(bool Success, string Message, string? Plan, DateTime? ExpiresAt);
@@ -198,11 +293,192 @@ record AdminSetupRequest(string Username, string Password);
 record AdminLoginRequest(string? Username, string? Password);
 record AdminCredentials(string Username, string PasswordHash, string Salt);
 
-sealed class AdminStore
+// ─── interfaces ───
+
+interface ILicenseStore
+{
+    Task<LicenseResponse> ActivateAsync(string key, string device);
+    Task CreateAsync(License l);
+    Task<List<License>> ListAllAsync();
+    Task<bool> DeleteAsync(string key);
+    Task<int> DeleteAllAsync();
+    Task<bool> ResetHwidAsync(string key);
+}
+
+interface IAdminStore
+{
+    Task<bool> ExistsAsync();
+    Task SetCredentialsAsync(string username, string password);
+    Task<bool> ValidateAsync(string username, string password);
+}
+
+// ─── PostgreSQL stores ───
+
+sealed class PgLicenseStore : ILicenseStore
+{
+    private readonly string _connStr;
+    public PgLicenseStore(string connStr) => _connStr = connStr;
+
+    public async Task<LicenseResponse> ActivateAsync(string key, string device)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+
+        await using var sel = conn.CreateCommand();
+        sel.CommandText = "SELECT key, plan, duration_days, expires_at, device_id FROM licenses WHERE LOWER(key) = LOWER(@k)";
+        sel.Parameters.AddWithValue("k", key);
+        await using var r = await sel.ExecuteReaderAsync();
+        if (!await r.ReadAsync())
+            return new(false, "Invalid key.", null, null);
+
+        var plan = r.GetString(1);
+        var days = r.GetInt32(2);
+        var expiresAt = r.IsDBNull(3) ? (DateTime?)null : r.GetDateTime(3);
+        var deviceId = r.IsDBNull(4) ? null : r.GetString(4);
+        await r.CloseAsync();
+
+        if (expiresAt is not null && expiresAt <= DateTime.UtcNow)
+            return new(false, "This subscription has expired.", null, null);
+        if (deviceId is not null && !string.Equals(deviceId, device, StringComparison.Ordinal))
+            return new(false, "This key is already bound to another device.", null, null);
+
+        if (deviceId is null)
+        {
+            var newExpiry = DateTime.UtcNow.AddDays(days);
+            await using var upd = conn.CreateCommand();
+            upd.CommandText = "UPDATE licenses SET device_id = @d, expires_at = @e WHERE LOWER(key) = LOWER(@k)";
+            upd.Parameters.AddWithValue("d", device);
+            upd.Parameters.AddWithValue("e", newExpiry);
+            upd.Parameters.AddWithValue("k", key);
+            await upd.ExecuteNonQueryAsync();
+            expiresAt = newExpiry;
+        }
+
+        return new(true, "Subscription activated successfully.", plan, expiresAt?.ToLocalTime());
+    }
+
+    public async Task CreateAsync(License l)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "INSERT INTO licenses (key, plan, duration_days) VALUES (@k, @p, @d)";
+        cmd.Parameters.AddWithValue("k", l.Key);
+        cmd.Parameters.AddWithValue("p", l.Plan);
+        cmd.Parameters.AddWithValue("d", l.DurationDays);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<List<License>> ListAllAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT key, plan, duration_days, expires_at, device_id FROM licenses ORDER BY key";
+        await using var r = await cmd.ExecuteReaderAsync();
+        var list = new List<License>();
+        while (await r.ReadAsync())
+        {
+            list.Add(new License(
+                r.GetString(0),
+                r.GetString(1),
+                r.GetInt32(2),
+                r.IsDBNull(3) ? null : r.GetDateTime(3),
+                r.IsDBNull(4) ? null : r.GetString(4)
+            ));
+        }
+        return list;
+    }
+
+    public async Task<bool> DeleteAsync(string key)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM licenses WHERE LOWER(key) = LOWER(@k)";
+        cmd.Parameters.AddWithValue("k", key);
+        return await cmd.ExecuteNonQueryAsync() > 0;
+    }
+
+    public async Task<int> DeleteAllAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM licenses";
+        return await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> ResetHwidAsync(string key)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE licenses SET device_id = NULL, expires_at = NULL WHERE LOWER(key) = LOWER(@k)";
+        cmd.Parameters.AddWithValue("k", key);
+        return await cmd.ExecuteNonQueryAsync() > 0;
+    }
+}
+
+sealed class PgAdminStore : IAdminStore
+{
+    private readonly string _connStr;
+    public PgAdminStore(string connStr) => _connStr = connStr;
+
+    public async Task<bool> ExistsAsync()
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM admin";
+        return (long)(await cmd.ExecuteScalarAsync())! > 0;
+    }
+
+    public async Task SetCredentialsAsync(string username, string password)
+    {
+        var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+        var hash = HashPassword(password, salt);
+
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO admin (id, username, password_hash, salt) VALUES (1, @u, @h, @s)
+            ON CONFLICT (id) DO UPDATE SET username = @u, password_hash = @h, salt = @s
+            """;
+        cmd.Parameters.AddWithValue("u", username);
+        cmd.Parameters.AddWithValue("h", hash);
+        cmd.Parameters.AddWithValue("s", salt);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<bool> ValidateAsync(string username, string password)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT username, password_hash, salt FROM admin WHERE id = 1";
+        await using var r = await cmd.ExecuteReaderAsync();
+        if (!await r.ReadAsync()) return false;
+
+        var storedUser = r.GetString(0);
+        var storedHash = r.GetString(1);
+        var salt = r.GetString(2);
+
+        if (!string.Equals(storedUser, username, StringComparison.OrdinalIgnoreCase)) return false;
+        return HashPassword(password, salt) == storedHash;
+    }
+
+    private static string HashPassword(string password, string salt)
+        => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(password + salt)));
+}
+
+// ─── file-based stores (local dev fallback) ───
+
+sealed class FileAdminStore : IAdminStore
 {
     private readonly string _file;
-
-    public AdminStore(string file) => _file = file;
+    public FileAdminStore(string file) => _file = file;
 
     public Task<bool> ExistsAsync() => Task.FromResult(File.Exists(_file));
 
@@ -224,26 +500,21 @@ sealed class AdminStore
             var creds = JsonSerializer.Deserialize<AdminCredentials>(json);
             if (creds is null) return false;
             if (!string.Equals(creds.Username, username, StringComparison.OrdinalIgnoreCase)) return false;
-            var hash = HashPassword(password, creds.Salt);
-            return hash == creds.PasswordHash;
+            return HashPassword(password, creds.Salt) == creds.PasswordHash;
         }
         catch { return false; }
     }
 
     private static string HashPassword(string password, string salt)
-    {
-        var bytes = Encoding.UTF8.GetBytes(password + salt);
-        var hash = SHA256.HashData(bytes);
-        return Convert.ToBase64String(hash);
-    }
+        => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(password + salt)));
 }
 
-sealed class LicenseStore
+sealed class FileLicenseStore : ILicenseStore
 {
     private readonly string _file;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public LicenseStore(string file) => _file = file;
+    public FileLicenseStore(string file) => _file = file;
 
     public async Task<LicenseResponse> ActivateAsync(string key, string device)
     {
@@ -302,6 +573,20 @@ sealed class LicenseStore
             all.RemoveAt(i);
             await WriteAsync(all);
             return true;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<int> DeleteAllAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var all = await ReadAsync();
+            var count = all.Count;
+            all.Clear();
+            await WriteAsync(all);
+            return count;
         }
         finally { _gate.Release(); }
     }
