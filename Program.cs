@@ -38,7 +38,7 @@ var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
 Directory.CreateDirectory(releaseDir);
 var releaseFile = Path.Combine(releaseDir, "release.json");
 {
-    var latestRelease = new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.exe");
+    var latestRelease = new ReleaseInfo("2.0.1", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.1/CoreX.Loader.exe");
     await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
 }
 
@@ -62,7 +62,7 @@ app.MapGet("/api/releases/current", async () =>
         var info = JsonSerializer.Deserialize<ReleaseInfo>(json);
         if (info is not null) return Results.Ok(info);
     }
-    return Results.Ok(new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.exe"));
+    return Results.Ok(new ReleaseInfo("2.0.1", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.1/CoreX.Loader.exe"));
 });
 
 app.MapPost("/api/admin/release", async (ReleaseInfo info, HttpRequest http) =>
