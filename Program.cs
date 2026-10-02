@@ -38,18 +38,8 @@ var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
 Directory.CreateDirectory(releaseDir);
 var releaseFile = Path.Combine(releaseDir, "release.json");
 {
-    var latestRelease = new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.zip");
-    bool shouldUpdate = true;
-    if (File.Exists(releaseFile))
-    {
-        try {
-            var existing = JsonSerializer.Deserialize<ReleaseInfo>(await File.ReadAllTextAsync(releaseFile));
-            if (existing is not null && Version.TryParse(existing.Version, out var ev) && Version.TryParse(latestRelease.Version, out var lv) && ev >= lv)
-                shouldUpdate = false;
-        } catch { }
-    }
-    if (shouldUpdate)
-        await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
+    var latestRelease = new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.exe");
+    await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
 }
 
 app.MapGet("/", () => Results.Ok(new { service = "CoreX License API", status = "online" }));
@@ -72,7 +62,7 @@ app.MapGet("/api/releases/current", async () =>
         var info = JsonSerializer.Deserialize<ReleaseInfo>(json);
         if (info is not null) return Results.Ok(info);
     }
-    return Results.Ok(new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.zip"));
+    return Results.Ok(new ReleaseInfo("2.0.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.0.0/CoreX.Loader.exe"));
 });
 
 app.MapPost("/api/admin/release", async (ReleaseInfo info, HttpRequest http) =>
