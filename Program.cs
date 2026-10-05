@@ -38,7 +38,7 @@ var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
 Directory.CreateDirectory(releaseDir);
 var releaseFile = Path.Combine(releaseDir, "release.json");
 {
-    var latestRelease = new ReleaseInfo("2.8.6", "https://github.com/blockedplayer/corex-api/releases/download/v2.8.6/CoreX.Loader.exe");
+    var latestRelease = new ReleaseInfo("2.8.7", "https://github.com/blockedplayer/corex-api/releases/download/v2.8.7/CoreX.Loader.exe");
     await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
 }
 
@@ -257,23 +257,21 @@ static async Task SeedPostgresAsync(string connStr)
     var pass = Environment.GetEnvironmentVariable("ADMIN_PASS");
     if (string.IsNullOrEmpty(user) || string.IsNullOrEmpty(pass)) return;
 
-    await using var conn = new NpgsqlConnection(connStr);
-    await conn.OpenAsync();
-
-    await using var check = conn.CreateCommand();
-    check.CommandText = "SELECT COUNT(*) FROM admin";
-    var count = (long)(await check.ExecuteScalarAsync())!;
-    if (count > 0) return;
-
     var salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
     var hash = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(pass + salt)));
 
-    await using var insert = conn.CreateCommand();
-    insert.CommandText = "INSERT INTO admin (id, username, password_hash, salt) VALUES (1, @u, @h, @s) ON CONFLICT DO NOTHING";
-    insert.Parameters.AddWithValue("u", user);
-    insert.Parameters.AddWithValue("h", hash);
-    insert.Parameters.AddWithValue("s", salt);
-    await insert.ExecuteNonQueryAsync();
+    await using var conn = new NpgsqlConnection(connStr);
+    await conn.OpenAsync();
+
+    await using var upsert = conn.CreateCommand();
+    upsert.CommandText = """
+        INSERT INTO admin (id, username, password_hash, salt) VALUES (1, @u, @h, @s)
+        ON CONFLICT (id) DO UPDATE SET username = @u, password_hash = @h, salt = @s
+        """;
+    upsert.Parameters.AddWithValue("u", user);
+    upsert.Parameters.AddWithValue("h", hash);
+    upsert.Parameters.AddWithValue("s", salt);
+    await upsert.ExecuteNonQueryAsync();
 }
 
 static async Task SeedFileDataAsync(string licensesFile, string adminFile)
