@@ -38,7 +38,7 @@ var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
 Directory.CreateDirectory(releaseDir);
 var releaseFile = Path.Combine(releaseDir, "release.json");
 {
-    var latestRelease = new ReleaseInfo("2.8.0", "https://github.com/blockedplayer/corex-api/releases/download/v2.8.0/CoreX.Loader.exe");
+    var latestRelease = new ReleaseInfo("2.8.1", "https://github.com/blockedplayer/corex-api/releases/download/v2.8.1/CoreX.Loader.exe");
     await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
 }
 
@@ -105,7 +105,7 @@ app.MapPost("/api/admin/keys", async (CreateKeyRequest req, HttpRequest http) =>
 
     if (req.Days <= 0) return Results.BadRequest(new { message = "Days must be greater than zero." });
     var key = "COREX-" + RandomKey(20);
-    await store.CreateAsync(new License(key, req.Plan ?? $"{req.Days} Day", req.Days, null, null));
+    await store.CreateAsync(new License(key, req.Plan ?? $"{req.Days} Day", req.Days, null, null, req.Name?.Trim()));
     return Results.Ok(new { key });
 });
 
@@ -122,6 +122,7 @@ app.MapGet("/api/admin/keys", async (HttpRequest http) =>
         k.DurationDays,
         ExpiresAt = k.ExpiresAt?.ToLocalTime(),
         k.DeviceId,
+        k.Name,
         Activated = k.ExpiresAt is not null,
         Expired = k.ExpiresAt is not null && k.ExpiresAt <= DateTime.UtcNow,
         Bound = k.DeviceId is not null
@@ -147,6 +148,17 @@ app.MapPost("/api/admin/keys/{key}/reset-hwid", async (string key, HttpRequest h
     var reset = await store.ResetHwidAsync(key);
     return reset
         ? Results.Ok(new { message = "HWID reset. Key can be activated on a new device." })
+        : Results.NotFound(new { message = "Key not found." });
+});
+
+app.MapPut("/api/admin/keys/{key}/name", async (string key, UpdateNameRequest req, HttpRequest http) =>
+{
+    if (!await AuthorizeAdmin(http, adminStore))
+        return Results.Json(new { message = "Unauthorized." }, statusCode: 401);
+
+    var updated = await store.UpdateNameAsync(key, req.Name?.Trim());
+    return updated
+        ? Results.Ok(new { message = "Name updated." })
         : Results.NotFound(new { message = "Key not found." });
 });
 
@@ -225,7 +237,8 @@ static async Task InitPostgresAsync(string connStr)
             plan TEXT NOT NULL DEFAULT 'Standard',
             duration_days INT NOT NULL DEFAULT 30,
             expires_at TIMESTAMPTZ,
-            device_id TEXT
+            device_id TEXT,
+            name TEXT
         );
         CREATE TABLE IF NOT EXISTS admin (
             id INT PRIMARY KEY DEFAULT 1,
@@ -233,6 +246,7 @@ static async Task InitPostgresAsync(string connStr)
             password_hash TEXT NOT NULL,
             salt TEXT NOT NULL
         );
+        ALTER TABLE licenses ADD COLUMN IF NOT EXISTS name TEXT;
         """;
     await cmd.ExecuteNonQueryAsync();
 }
@@ -289,10 +303,11 @@ static async Task SeedFileDataAsync(string licensesFile, string adminFile)
 // ─── records ───
 
 record ActivateRequest(string Key, string DeviceId);
-record CreateKeyRequest(int Days, string? Plan);
+record CreateKeyRequest(int Days, string? Plan, string? Name);
 record LicenseResponse(bool Success, string Message, string? Plan, DateTime? ExpiresAt);
 record ReleaseInfo(string Version, string? Url);
-record License(string Key, string Plan, int DurationDays, DateTime? ExpiresAt, string? DeviceId);
+record License(string Key, string Plan, int DurationDays, DateTime? ExpiresAt, string? DeviceId, string? Name);
+record UpdateNameRequest(string? Name);
 record AdminSetupRequest(string Username, string Password);
 record AdminLoginRequest(string? Username, string? Password);
 record AdminCredentials(string Username, string PasswordHash, string Salt);
@@ -307,6 +322,7 @@ interface ILicenseStore
     Task<bool> DeleteAsync(string key);
     Task<int> DeleteAllAsync();
     Task<bool> ResetHwidAsync(string key);
+    Task<bool> UpdateNameAsync(string key, string? name);
 }
 
 interface IAdminStore
@@ -366,10 +382,11 @@ sealed class PgLicenseStore : ILicenseStore
         await using var conn = new NpgsqlConnection(_connStr);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "INSERT INTO licenses (key, plan, duration_days) VALUES (@k, @p, @d)";
+        cmd.CommandText = "INSERT INTO licenses (key, plan, duration_days, name) VALUES (@k, @p, @d, @n)";
         cmd.Parameters.AddWithValue("k", l.Key);
         cmd.Parameters.AddWithValue("p", l.Plan);
         cmd.Parameters.AddWithValue("d", l.DurationDays);
+        cmd.Parameters.AddWithValue("n", (object?)l.Name ?? DBNull.Value);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -378,7 +395,7 @@ sealed class PgLicenseStore : ILicenseStore
         await using var conn = new NpgsqlConnection(_connStr);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT key, plan, duration_days, expires_at, device_id FROM licenses ORDER BY key";
+        cmd.CommandText = "SELECT key, plan, duration_days, expires_at, device_id, name FROM licenses ORDER BY key";
         await using var r = await cmd.ExecuteReaderAsync();
         var list = new List<License>();
         while (await r.ReadAsync())
@@ -388,10 +405,22 @@ sealed class PgLicenseStore : ILicenseStore
                 r.GetString(1),
                 r.GetInt32(2),
                 r.IsDBNull(3) ? null : r.GetDateTime(3),
-                r.IsDBNull(4) ? null : r.GetString(4)
+                r.IsDBNull(4) ? null : r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5)
             ));
         }
         return list;
+    }
+
+    public async Task<bool> UpdateNameAsync(string key, string? name)
+    {
+        await using var conn = new NpgsqlConnection(_connStr);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE licenses SET name = @n WHERE LOWER(key) = LOWER(@k)";
+        cmd.Parameters.AddWithValue("n", (object?)name ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("k", key);
+        return await cmd.ExecuteNonQueryAsync() > 0;
     }
 
     public async Task<bool> DeleteAsync(string key)
@@ -604,6 +633,21 @@ sealed class FileLicenseStore : ILicenseStore
             var i = all.FindIndex(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
             if (i < 0) return false;
             all[i] = all[i] with { DeviceId = null, ExpiresAt = null };
+            await WriteAsync(all);
+            return true;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<bool> UpdateNameAsync(string key, string? name)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            var all = await ReadAsync();
+            var i = all.FindIndex(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (i < 0) return false;
+            all[i] = all[i] with { Name = name };
             await WriteAsync(all);
             return true;
         }
