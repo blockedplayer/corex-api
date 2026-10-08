@@ -12,12 +12,18 @@
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <ApplicationIcon>corex.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\MW2.dll" LogicalName="mw2.dll" />
-    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\PYTExample.exe" LogicalName="PYTExample.exe" />
-    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\SecureEngineSDK64.dll" LogicalName="SecureEngineSDK64.dll" />
-    <EmbeddedResource Include="$(UserProfile)\Desktop\coffin\coffin\mw2\mw2 working example\Build\FixGame.exe" LogicalName="FixGame.exe" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\PremiumCoreX\mw2\mw2 working example\Build\MW2.dll" LogicalName="mw2.dll" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\PremiumCoreX\mw2\mw2 working example\Build\PYTExample.exe" LogicalName="PYTExample.exe" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\PremiumCoreX\mw2\mw2 working example\Build\SecureEngineSDK64.dll" LogicalName="SecureEngineSDK64.dll" />
+    <EmbeddedResource Include="$(UserProfile)\Desktop\PremiumCoreX\mw2\mw2 working example\Build\FixGame.exe" LogicalName="FixGame.exe" />
+    <EmbeddedResource Include="$(ProjectDir)proxy\x64\Release\version.dll" LogicalName="version.dll" />
+    <EmbeddedResource Include="C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT\vcruntime140.dll" LogicalName="vcruntime140.dll" />
+    <EmbeddedResource Include="C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT\vcruntime140_1.dll" LogicalName="vcruntime140_1.dll" />
+    <EmbeddedResource Include="C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC\14.51.36231\x64\Microsoft.VC145.CRT\msvcp140.dll" LogicalName="msvcp140.dll" />
   </ItemGroup>
 </Project>

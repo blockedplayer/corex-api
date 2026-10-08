@@ -137,7 +137,7 @@
                         <Border Height="1" Background="{StaticResource BorderBrush}" Margin="0,0,0,12"/>
                         <TextBlock x:Name="DeviceLabel" Text="Device: —" FontSize="11"
                                    Foreground="{StaticResource MutedBrush}" Margin="0,0,0,3"/>
-                        <TextBlock x:Name="VersionLabel" Text="v1.2.0" FontSize="11"
+                        <TextBlock x:Name="VersionLabel" Text="v1.5.0" FontSize="11"
                                    Foreground="{StaticResource MutedBrush}" Cursor="Hand"
                                    MouseLeftButtonDown="Version_DoubleClick"/>
                     </StackPanel>
@@ -318,7 +318,72 @@
                                 </Border>
                             </Grid>
 
-                            <!-- CHANGELOG -->
+                            <!-- SYSTEM SCAN -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,20" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextBrush}">
+                                                <Run Text="System "/>
+                                                <Run Text="Scan" Foreground="{StaticResource AccentGlowBrush}"/>
+                                            </TextBlock>
+                                            <TextBlock Text="Check your system for conflicts before injecting."
+                                                       Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                       Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                        <Button x:Name="ScanBtn" Grid.Column="1"
+                                                Style="{StaticResource AccentButton}"
+                                                Content="SCAN"
+                                                Click="RunSystemScan_Click"
+                                                VerticalAlignment="Center"/>
+                                    </Grid>
+                                    <Border x:Name="ScanResultsBorder" Visibility="Collapsed"
+                                            Background="{StaticResource InputBgBrush}"
+                                            BorderBrush="{StaticResource InputBorderBrush}"
+                                            BorderThickness="1" CornerRadius="6"
+                                            MaxHeight="260" Padding="4">
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <StackPanel x:Name="ScanResultsPanel" Margin="10,8"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- CHECK FOR UPDATES -->
+                            <Border Background="{StaticResource CardBrush}"
+                                    BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="10" Padding="24,20">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock FontSize="15" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextBrush}">
+                                            <Run Text="Software "/>
+                                            <Run Text="Updates" Foreground="{StaticResource AccentGlowBrush}"/>
+                                        </TextBlock>
+                                        <TextBlock x:Name="UpdateStatusText"
+                                                   Text="Check if a newer version of CORE X is available."
+                                                   Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
+                                                   Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <Button x:Name="CheckUpdateBtn" Grid.Column="1"
+                                            Style="{StaticResource AccentButton}"
+                                            Content="CHECK FOR UPDATES"
+                                            Click="CheckUpdate_Click"
+                                            VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+
                         </StackPanel>
                     </ScrollViewer>
 
@@ -361,12 +426,11 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                         <TextBlock Text="Launch Game" FontSize="15" FontWeight="SemiBold"
                                                    Foreground="{StaticResource TextBrush}"/>
-                                        <TextBlock Text="Start the game through Steam, Xbox PC, or Battle.net."
+                                        <TextBlock Text="Start the game through Steam or Xbox PC."
                                                    Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
                                                    Margin="0,4,0,0"/>
                                     </StackPanel>
@@ -377,10 +441,6 @@
                                     <Button Grid.Column="2" Content="XBOX PC"
                                             Style="{StaticResource AccentButton}"
                                             Click="LaunchXbox_Click"
-                                            VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                    <Button Grid.Column="3" Content="BATTLE.NET"
-                                            Style="{StaticResource AccentButton}"
-                                            Click="LaunchBattleNet_Click"
                                             VerticalAlignment="Center" Margin="8,0,0,0"/>
                                 </Grid>
                             </Border>
@@ -479,6 +539,22 @@
                                 <StackPanel>
                                     <TextBlock Text="Game" FontSize="17" FontWeight="Bold"
                                                Foreground="{StaticResource TextBrush}" Margin="0,0,0,18"/>
+
+                                    <TextBlock Text="Platform" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <ComboBox x:Name="GamePlatformCombo" Grid.Column="0"
+                                                  SelectionChanged="GamePlatform_Changed">
+                                            <ComboBoxItem Content="Steam" IsSelected="True"/>
+                                            <ComboBoxItem Content="Xbox (PC)"/>
+                                        </ComboBox>
+                                        <Button Grid.Column="1" Content="Auto Detect" Margin="8,4,0,4"
+                                                Click="AutoDetectGameDir_Click"/>
+                                    </Grid>
 
                                     <TextBlock Text="Game Directory" FontSize="12" FontWeight="SemiBold"
                                                Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
@@ -818,7 +894,7 @@
                                                    Foreground="{StaticResource TextDimBrush}" FontSize="12.5"
                                                    Margin="0,0,0,18"/>
 
-                                        <Grid Margin="0,0,0,14">
+                                        <Grid Margin="0,0,0,8">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="12"/>
@@ -829,7 +905,13 @@
                                             <StackPanel Grid.Column="0">
                                                 <TextBlock Text="Plan Name" FontSize="12" FontWeight="SemiBold"
                                                            Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
-                                                <TextBox x:Name="GenPlanBox" Text="Monthly" Margin="0,4,0,0"/>
+                                                <ComboBox x:Name="GenPlanBox" Margin="0,4,0,0" FontSize="13">
+                                                    <ComboBoxItem Content="Lifetime"/>
+                                                    <ComboBoxItem Content="Day"/>
+                                                    <ComboBoxItem Content="Monthly" IsSelected="True"/>
+                                                    <ComboBoxItem Content="Admin"/>
+                                                    <ComboBoxItem Content="Promoter"/>
+                                                </ComboBox>
                                             </StackPanel>
                                             <StackPanel Grid.Column="2">
                                                 <TextBlock Text="Duration (days)" FontSize="12" FontWeight="SemiBold"
@@ -842,6 +924,12 @@
                                                 <TextBox x:Name="GenQtyBox" Text="1" Margin="0,4,0,0"/>
                                             </StackPanel>
                                         </Grid>
+                                        <StackPanel Margin="0,0,0,14">
+                                            <TextBlock Text="Label (optional — who is this key for?)" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextDimBrush}" Margin="0,0,0,4"/>
+                                            <TextBox x:Name="GenNameBox" Margin="0,4,0,0" FontSize="13"
+                                                     MaxLength="60"/>
+                                        </StackPanel>
 
                                         <StackPanel Orientation="Horizontal">
                                             <Button x:Name="GenKeyBtn" Style="{StaticResource AccentButton}"
@@ -865,9 +953,52 @@
                                         <Grid Margin="0,0,0,14">
                                             <TextBlock Text="Manage Keys" FontSize="17" FontWeight="Bold"
                                                        Foreground="{StaticResource TextBrush}"/>
-                                            <Button Content="REFRESH" HorizontalAlignment="Right"
-                                                    Click="AdminRefreshKeys_Click" Padding="14,6"/>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <Button Content="DELETE ALL" Style="{StaticResource DangerButton}"
+                                                        Click="AdminDeleteAllKeys_Click" Padding="14,6" Margin="0,0,8,0"/>
+                                                <Button Content="REFRESH"
+                                                        Click="AdminRefreshKeys_Click" Padding="14,6"/>
+                                            </StackPanel>
                                         </Grid>
+
+                                        <!-- FILTERS -->
+                                        <Grid Margin="0,0,0,10">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBox x:Name="KeySearchBox" Grid.Column="0"
+                                                     FontSize="12" Margin="0,0,8,0"
+                                                     Tag="Search keys or HWID..."
+                                                     TextChanged="KeyFilter_Changed"/>
+
+                                            <ComboBox x:Name="KeyStatusFilter" Grid.Column="1"
+                                                      Width="130" FontSize="12" Margin="0,0,8,0"
+                                                      SelectionChanged="KeyFilter_Changed">
+                                                <ComboBoxItem Content="All Status" IsSelected="True"/>
+                                                <ComboBoxItem Content="Not Activated"/>
+                                                <ComboBoxItem Content="Bound"/>
+                                                <ComboBoxItem Content="Expired"/>
+                                                <ComboBoxItem Content="Active"/>
+                                            </ComboBox>
+
+                                            <ComboBox x:Name="KeyTypeFilter" Grid.Column="2"
+                                                      Width="130" FontSize="12"
+                                                      SelectionChanged="KeyFilter_Changed">
+                                                <ComboBoxItem Content="All Types" IsSelected="True"/>
+                                                <ComboBoxItem Content="Lifetime"/>
+                                                <ComboBoxItem Content="Day"/>
+                                                <ComboBoxItem Content="Monthly"/>
+                                                <ComboBoxItem Content="Admin"/>
+                                                <ComboBoxItem Content="Promoter"/>
+                                            </ComboBox>
+                                        </Grid>
+
+                                        <TextBlock x:Name="KeyCountLabel" FontSize="11"
+                                                   Foreground="{StaticResource MutedBrush}"
+                                                   Margin="0,0,0,6"/>
 
                                         <Border Background="{StaticResource InputBgBrush}"
                                                 BorderBrush="{StaticResource InputBorderBrush}"
@@ -918,6 +1049,24 @@
 
                 </Grid>
             </DockPanel>
+            <!-- ════════════════ UPDATE OVERLAY ════════════════ -->
+            <Border x:Name="UpdateOverlay" Visibility="Collapsed"
+                    Background="#E0101014" CornerRadius="12"
+                    Grid.ColumnSpan="2" Panel.ZIndex="100">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock Text="UPDATING..." FontSize="28" FontWeight="Bold"
+                               Foreground="{StaticResource AccentGlowBrush}"
+                               HorizontalAlignment="Center" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="UpdateMessage"
+                               Text="Downloading the latest version. Please wait..."
+                               FontSize="14" Foreground="{StaticResource TextDimBrush}"
+                               HorizontalAlignment="Center" Margin="0,0,0,16"/>
+                    <TextBlock x:Name="UpdateSubMessage"
+                               Text="Do not close the loader."
+                               FontSize="12" Foreground="{StaticResource MutedBrush}"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Border>
         </Grid>
     </Border>
 </Window>
