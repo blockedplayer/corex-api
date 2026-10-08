@@ -22,7 +22,7 @@ namespace CoreX.Loader;
 
 public partial class MainWindow : Window
 {
-    private const string AppVersion = "4.0.1";
+    private const string AppVersion = "4.0.2";
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
     private readonly HttpClient _fastHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _pollTimer;
@@ -73,23 +73,59 @@ public partial class MainWindow : Window
         foreach (var name in EmbeddedPayloads)
         {
             var dest = Path.Combine(EmbeddedBinDir, name);
-            try
+            using var stream = asm.GetManifestResourceStream(name);
+            if (stream is null) continue;
+            long expectedSize = stream.Length;
+            bool needsWrite = true;
+
+            if (File.Exists(dest))
             {
-                if (File.Exists(dest))
+                try
                 {
-                    try { File.SetAttributes(dest, FileAttributes.Normal); } catch { }
-                    try { File.Delete(dest); } catch { }
+                    var fi = new FileInfo(dest);
+                    if (fi.Length == expectedSize)
+                        needsWrite = false;
                 }
-                using var stream = asm.GetManifestResourceStream(name);
-                if (stream is null) continue;
-                using var fs = File.Create(dest);
-                stream.CopyTo(fs);
+                catch { }
             }
-            catch (Exception ex)
+
+            if (!needsWrite) continue;
+
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                _extractionWarnings.Add($"{name}: {ex.Message}");
+                try
+                {
+                    if (File.Exists(dest))
+                    {
+                        try { File.SetAttributes(dest, FileAttributes.Normal); } catch { }
+                        File.Delete(dest);
+                    }
+                    stream.Position = 0;
+                    using var fs = File.Create(dest);
+                    stream.CopyTo(fs);
+                    fs.Flush();
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt == 2)
+                        _extractionWarnings.Add($"{name}: {ex.Message}");
+                    else
+                        Thread.Sleep(500);
+                }
             }
-            try { File.SetAttributes(dest, File.GetAttributes(dest) | FileAttributes.Hidden | FileAttributes.System); } catch { }
+
+            if (File.Exists(dest))
+            {
+                try
+                {
+                    var written = new FileInfo(dest);
+                    if (written.Length != expectedSize)
+                        _extractionWarnings.Add($"{name}: size mismatch (expected {expectedSize}, got {written.Length})");
+                }
+                catch { }
+                try { File.SetAttributes(dest, File.GetAttributes(dest) | FileAttributes.Hidden | FileAttributes.System); } catch { }
+            }
         }
 
         var critical = new[] { "mw2.dll", "PYTExample.exe" };
@@ -1373,10 +1409,7 @@ public partial class MainWindow : Window
 
     private static void EnsureFilesExtracted()
     {
-        var critical = new[] { "mw2.dll", "PYTExample.exe" };
-        bool anyMissing = critical.Any(f => !File.Exists(Path.Combine(EmbeddedBinDir, f)));
-        if (anyMissing)
-            ExtractEmbeddedPayloads();
+        ExtractEmbeddedPayloads();
     }
 
     private void AutoDetectGameDir(string platform)
