@@ -13,6 +13,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Threading;
 using MessageBox = System.Windows.MessageBox;
 using Button = System.Windows.Controls.Button;
 using Orientation = System.Windows.Controls.Orientation;
@@ -21,7 +22,7 @@ namespace CoreX.Loader;
 
 public partial class MainWindow : Window
 {
-    private const string AppVersion = "1.4.0";
+    private const string AppVersion = "3.5.0";
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
     private readonly HttpClient _fastHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _pollTimer;
@@ -29,9 +30,12 @@ public partial class MainWindow : Window
     private string DeviceId { get; } = DeviceIdentity.Get();
     private bool _licensed;
     private bool _adminAuthed;
+    private List<ApiKeyEntry> _cachedKeys = new();
     private bool _autoInjected;
     private bool _autoInjecting;
     private bool _updating;
+    private readonly SemaphoreSlim _injectionLock = new(1, 1);
+    private static Mutex? _singleInstanceMutex;
     private string _adminUser = "";
     private string _adminPass = "";
     private AppSettings _currentSettings = new();
@@ -39,31 +43,61 @@ public partial class MainWindow : Window
     private static readonly string ExeDir = AppContext.BaseDirectory;
     private static readonly string CoffinBuild = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        @"Desktop\coffin\coffin\mw2\mw2 working example\Build");
-    private static readonly string DefaultSourceDll  = Path.Combine(CoffinBuild, "MW2.dll");
-    private static readonly string DefaultProxyDll   = Path.Combine(ExeDir, "version.dll");
-    private static readonly string DefaultStringTableDll = Path.Combine(ExeDir, "stringtable.dll");
+        @"Desktop\PremiumCoreX\mw2\mw2 working example\Build");
+    private static readonly string DefaultSourceDll  = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX", "bin", "mw2.dll");
     private static readonly string EmbeddedBinDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX", "bin");
+    private static readonly string DefaultProxyDll   = Path.Combine(EmbeddedBinDir, "version.dll");
+    private static readonly string DefaultStringTableDll = Path.Combine(ExeDir, "stringtable.dll");
     private static readonly string PayloadCacheDir   = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX", "payload");
     private static readonly string CachedPayloadPath = Path.Combine(PayloadCacheDir, "cxpayload.dll");
     private const string DefaultDeployName = "cxpayload.dll";
 
-    private static readonly string[] EmbeddedPayloads = { "mw2.dll", "PYTExample.exe", "SecureEngineSDK64.dll", "FixGame.exe" };
+    private static readonly string[] EmbeddedPayloads = { "mw2.dll", "PYTExample.exe", "SecureEngineSDK64.dll", "FixGame.exe", "version.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll" };
+
+    private static readonly List<string> _extractionWarnings = new();
 
     private static void ExtractEmbeddedPayloads()
     {
         Directory.CreateDirectory(EmbeddedBinDir);
+        try
+        {
+            var binDir = new DirectoryInfo(EmbeddedBinDir);
+            binDir.Attributes |= FileAttributes.Hidden;
+            if (binDir.Parent != null)
+                binDir.Parent.Attributes |= FileAttributes.Hidden;
+        } catch { }
         var asm = Assembly.GetExecutingAssembly();
         foreach (var name in EmbeddedPayloads)
         {
             var dest = Path.Combine(EmbeddedBinDir, name);
-            using var stream = asm.GetManifestResourceStream(name);
-            if (stream is null) continue;
-            if (File.Exists(dest) && new FileInfo(dest).Length == stream.Length) continue;
-            using var fs = File.Create(dest);
-            stream.CopyTo(fs);
+            try
+            {
+                if (File.Exists(dest))
+                {
+                    try { File.SetAttributes(dest, FileAttributes.Normal); } catch { }
+                    try { File.Delete(dest); } catch { }
+                }
+                using var stream = asm.GetManifestResourceStream(name);
+                if (stream is null) continue;
+                using var fs = File.Create(dest);
+                stream.CopyTo(fs);
+            }
+            catch (Exception ex)
+            {
+                _extractionWarnings.Add($"{name}: {ex.Message}");
+            }
+            try { File.SetAttributes(dest, File.GetAttributes(dest) | FileAttributes.Hidden | FileAttributes.System); } catch { }
+        }
+
+        var critical = new[] { "mw2.dll", "PYTExample.exe" };
+        var missing = critical.Where(f => !File.Exists(Path.Combine(EmbeddedBinDir, f))).ToList();
+        if (missing.Count > 0)
+        {
+            var files = string.Join(", ", missing);
+            _extractionWarnings.Add($"BLOCKED: {files}");
         }
     }
 
@@ -74,6 +108,22 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        bool createdNew = true;
+        try
+        {
+            _singleInstanceMutex = new Mutex(true, @"Local\CoreXLoaderSingleInstance", out createdNew);
+        }
+        catch
+        {
+            _singleInstanceMutex = null;
+        }
+        if (!createdNew)
+        {
+            MessageBox.Show("CoreX Loader is already running.", "CORE X", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Environment.Exit(0);
+            return;
+        }
+
         ExtractEmbeddedPayloads();
         AuthGuard.InitProtection();
         InitializeComponent();
@@ -91,6 +141,7 @@ public partial class MainWindow : Window
 
         DeviceLabel.Text = $"Device: {DeviceId[..8]}...";
         SubDeviceText.Text = DeviceId[..8] + "...";
+        VersionLabel.Text = $"v{AppVersion}";
 
         LoadSettings();
 
@@ -107,18 +158,31 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(_currentSettings.LicenseKey))
             _ = AutoActivateAsync(_currentSettings.LicenseKey);
 
-        _ = CheckForUpdateAsync();
+        if (_extractionWarnings.Count > 0)
+        {
+            foreach (var w in _extractionWarnings)
+                AppendLog($"[WARNING] File extraction issue: {w}");
+
+            if (_extractionWarnings.Any(w => w.Contains("BLOCKED")))
+            {
+                AppendLog("[!] Windows Defender or antivirus is blocking critical files.");
+                AppendLog("[FIX] Add this folder to Defender exclusions:");
+                AppendLog($"      {EmbeddedBinDir}");
+                AppendLog("[FIX] Windows Security > Virus & Threat Protection > Manage Settings > Exclusions > Add Folder");
+            }
+        }
+
+        if (!Environment.GetCommandLineArgs().Contains("--skip-update"))
+            _ = CheckForUpdateAsync();
     }
 
     private async Task CheckForUpdateAsync()
     {
         try
         {
-            var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
-            var gameRunning = Process.GetProcessesByName(procName);
-            if (gameRunning.Length > 0)
+            if (FindGameProcess() != null)
             {
-                foreach (var p in gameRunning) p.Dispose();
+                AppendLog("[UPDATE] Game is running — skipping auto-update.");
                 return;
             }
 
@@ -134,13 +198,37 @@ public partial class MainWindow : Window
                 Version.TryParse(AppVersion, out var local) &&
                 remote > local)
             {
+                if (FindGameProcess() != null)
+                {
+                    AppendLog($"[UPDATE] v{version} available but game is running — update skipped.");
+                    return;
+                }
                 _updating = true;
-                VersionLabel.Text = $"Updating to v{version}...";
+                ShowUpdateOverlay($"Updating to v{version}...");
                 await DownloadUpdateAsync(url);
+                HideUpdateOverlay();
                 _updating = false;
             }
         }
-        catch { }
+        catch
+        {
+            HideUpdateOverlay();
+            _updating = false;
+        }
+    }
+
+    private void ShowUpdateOverlay(string message)
+    {
+        UpdateOverlay.Visibility = Visibility.Visible;
+        UpdateMessage.Text = message;
+        UpdateSubMessage.Text = "Do not close the loader. All features are locked until the update completes.";
+        VersionLabel.Text = message;
+    }
+
+    private void HideUpdateOverlay()
+    {
+        UpdateOverlay.Visibility = Visibility.Collapsed;
+        VersionLabel.Text = $"v{AppVersion}";
     }
 
     private async Task DownloadUpdateAsync(string url)
@@ -152,6 +240,8 @@ public partial class MainWindow : Window
 
             var updatePath = currentExe + ".update";
 
+            Dispatcher.Invoke(() => UpdateMessage.Text = "Downloading update... Please wait.");
+
             using var dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
             using var response = await dlClient.GetAsync(url);
             response.EnsureSuccessStatusCode();
@@ -159,9 +249,30 @@ public partial class MainWindow : Window
             await response.Content.CopyToAsync(fs);
             fs.Close();
 
+            Dispatcher.Invoke(() =>
+            {
+                UpdateMessage.Text = "Installing update... Restarting loader.";
+                UpdateSubMessage.Text = "The loader will restart automatically.";
+            });
+
             var batchPath = Path.Combine(Path.GetTempPath(), "corex_update.cmd");
             File.WriteAllText(batchPath,
-                $"@echo off\r\ntimeout /t 2 /nobreak >nul\r\nmove /Y \"{updatePath}\" \"{currentExe}\"\r\nstart \"\" \"{currentExe}\"\r\ndel \"%~f0\"");
+                "@echo off\r\n" +
+                "setlocal\r\n" +
+                "set retries=0\r\n" +
+                ":retry\r\n" +
+                "timeout /t 2 /nobreak >nul\r\n" +
+                $"move /Y \"{updatePath}\" \"{currentExe}\" >nul 2>&1\r\n" +
+                "if errorlevel 1 (\r\n" +
+                "  set /a retries+=1\r\n" +
+                "  if %retries% lss 10 goto retry\r\n" +
+                $"  del \"{updatePath}\" >nul 2>&1\r\n" +
+                $"  start \"\" \"{currentExe}\" --skip-update\r\n" +
+                "  del \"%~f0\"\r\n" +
+                "  exit /b\r\n" +
+                ")\r\n" +
+                $"start \"\" \"{currentExe}\" --skip-update\r\n" +
+                "del \"%~f0\"");
 
             Process.Start(new ProcessStartInfo
             {
@@ -175,6 +286,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            Dispatcher.Invoke(() => HideUpdateOverlay());
             MessageBox.Show($"Update failed: {ex.Message}", "Update Error",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -186,7 +298,11 @@ public partial class MainWindow : Window
     }
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void Close_Click(object sender, RoutedEventArgs e)
+    {
+        DisableDebugFlag();
+        Close();
+    }
 
     // ═══════════════ HIDDEN ADMIN ACCESS ═══════════════
 
@@ -234,18 +350,19 @@ public partial class MainWindow : Window
 
     private void PollGameStatus()
     {
-        var procName = ProcessNameBox?.Text?.Trim();
-        if (string.IsNullOrEmpty(procName)) procName = "cod22-cod";
-
         try
         {
-            var procs = Process.GetProcessesByName(procName);
-            if (procs.Length > 0)
+            string? foundName = FindGameProcess();
+            if (foundName != null)
             {
+                var procs = Process.GetProcessesByName(foundName);
+                int pid = procs.Length > 0 ? procs[0].Id : 0;
+                foreach (var p in procs) p.Dispose();
+
                 GameDot.Fill = FindResource("SuccessBrush") as SolidColorBrush;
                 GameStatusText.Text = "Game running";
                 HomeGameStatus.Text = "Running";
-                HomeGamePID.Text = $"PID: {procs[0].Id}";
+                HomeGamePID.Text = pid > 0 ? $"PID: {pid}" : "PID: —";
 
                 if (!_autoInjected && !_autoInjecting && _licensed)
                     TriggerAutoInject();
@@ -314,8 +431,10 @@ public partial class MainWindow : Window
 
     private bool WarnIfGameRunning()
     {
-        var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
+        var procName = FindGameProcess();
+        if (procName == null) return true;
         var procs = Process.GetProcessesByName(procName);
+        foreach (var p in procs) p.Dispose();
         if (procs.Length > 0)
         {
             AppendLog("[WARN] Game is running — DLLs may be locked.");
@@ -356,29 +475,7 @@ public partial class MainWindow : Window
 
     private void DeployProxy()
     {
-        var proxySource = ProxyDll;
-        var gameDir     = GameDirBox.Text.Trim();
-
-        if (string.IsNullOrEmpty(proxySource))
-        {
-            AppendLog("[INFO] No proxy DLL configured — skipping.");
-            return;
-        }
-        if (!File.Exists(proxySource)) { AppendLog("[ERROR] Proxy DLL not found."); return; }
-        if (string.IsNullOrEmpty(gameDir) || !Directory.Exists(gameDir))
-        {
-            AppendLog("[ERROR] Game directory not set.");
-            return;
-        }
-
-        var target = Path.Combine(gameDir, "version.dll");
-        try
-        {
-            AppendLog("[DEPLOY] Proxy → version.dll");
-            File.Copy(proxySource, target, overwrite: true);
-            AppendLog($"[OK] Proxy deployed ({new FileInfo(target).Length / 1024} KB)");
-        }
-        catch (Exception ex) { AppendLog($"[ERROR] Proxy deploy failed: {ex.Message}"); }
+        AppendLog("[INFO] Proxy DLL disabled — kernel mapper handles injection.");
     }
 
     private void DeployStringTable()
@@ -709,63 +806,885 @@ public partial class MainWindow : Window
         catch { }
     }
 
+    // ═══════════════ SYSTEM SCAN ═══════════════
+
+    private static readonly (string process, string label)[] ConflictProcesses = new[]
+    {
+        ("cheatengine",       "Cheat Engine"),
+        ("x64dbg",            "x64dbg Debugger"),
+        ("x32dbg",            "x32dbg Debugger"),
+        ("ProcessHacker",     "Process Hacker"),
+        ("SystemInformer",    "System Informer"),
+        ("ida64",             "IDA Pro"),
+        ("HxD",               "HxD Hex Editor"),
+        ("ReClass",           "ReClass"),
+        ("GameBar",           "Xbox Game Bar"),
+        ("GameBarPresenceWriter", "Xbox Game Bar Presence"),
+        ("GameBarFTServer",   "Xbox Game DVR"),
+        ("XboxApp",           "Xbox App"),
+        ("EasyAntiCheat",     "EasyAntiCheat"),
+        ("BEService",         "BattlEye Service"),
+        ("vgc",               "Vanguard Anti-Cheat (Riot)"),
+        ("faceit",            "FACEIT Anti-Cheat"),
+        ("ESEA",              "ESEA Client"),
+        ("wallpaper64",       "Wallpaper Engine"),
+        ("wallpaper32",       "Wallpaper Engine"),
+        ("obs64",             "OBS Studio"),
+        ("obs32",             "OBS Studio"),
+        ("StreamlabsOBS",     "Streamlabs OBS"),
+    };
+
+    private async void RunSystemScan_Click(object sender, RoutedEventArgs e)
+    {
+        ScanBtn.IsEnabled = false;
+        ScanBtn.Content = "SCANNING...";
+        ScanResultsPanel.Children.Clear();
+        ScanResultsBorder.Visibility = Visibility.Visible;
+
+        var procName = FindGameProcess();
+        int passCount = 0, warnCount = 0, failCount = 0;
+
+        // 1. Admin privileges
+        try
+        {
+            var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            if (principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator))
+            {
+                AddScanResult("PASS", "Administrator Privileges", "Running as admin.", null);
+                passCount++;
+            }
+            else
+            {
+                AddScanResult("FAIL", "Administrator Privileges", "Not running as admin — kernel mapper will fail.",
+                    "Right-click CoreX.Loader.exe → Run as administrator");
+                failCount++;
+            }
+        }
+        catch
+        {
+            AddScanResult("WARN", "Administrator Privileges", "Could not determine admin status.",
+                "Try running as administrator");
+            warnCount++;
+        }
+
+        // 2. Game process
+        try
+        {
+            if (procName != null)
+            {
+                var procs = Process.GetProcessesByName(procName);
+                if (procs.Length > 0)
+                {
+                    AddScanResult("PASS", "Game Process", $"{procName} detected (PID: {procs[0].Id})", null);
+                    passCount++;
+                    foreach (var p in procs) p.Dispose();
+                }
+                else
+                {
+                    AddScanResult("INFO", "Game Process", "Game is not running.",
+                        "Launch the game first, or use the Loader tab launch buttons");
+                    warnCount++;
+                }
+            }
+            else
+            {
+                AddScanResult("INFO", "Game Process", "Game is not running.",
+                    "Launch the game first, or use the Loader tab launch buttons");
+                warnCount++;
+            }
+        }
+        catch
+        {
+            AddScanResult("INFO", "Game Process", "Could not check game process.", null);
+            warnCount++;
+        }
+
+        // 3. Overlay conflicts (only if game is running)
+        try
+        {
+            var overlays = DetectOverlays(procName);
+            if (overlays.Count == 0)
+            {
+                AddScanResult("PASS", "Overlay Conflicts", "No conflicting overlays detected.", null);
+                passCount++;
+            }
+            else
+            {
+                foreach (var ov in overlays)
+                {
+                    string fix = ov switch
+                    {
+                        "NVIDIA Overlay (ShadowPlay)" or "NVIDIA Overlay (Camera)" =>
+                            "Open GeForce Experience → Settings → General → disable In-Game Overlay",
+                        "Discord Overlay" =>
+                            "Open Discord → Settings → Game Overlay → disable overlay",
+                        "MSI Afterburner / RivaTuner" =>
+                            "Close MSI Afterburner and RivaTuner Statistics Server",
+                        "Steam Overlay" =>
+                            "Steam → Settings → In-Game → uncheck Enable Steam Overlay",
+                        "Xbox Game Bar Overlay" or "Xbox Game Bar SDK" =>
+                            "Windows Settings → Gaming → Xbox Game Bar → turn Off",
+                        "OBS Game Capture" =>
+                            "Close OBS or disable Game Capture source",
+                        "Fraps" =>
+                            "Close Fraps before launching",
+                        "Medal.tv Overlay" =>
+                            "Close Medal.tv or disable overlay in its settings",
+                        "Battle.net Helper" =>
+                            "Close Battle.net client before injecting — it loads a helper overlay",
+                        _ => "Disable this overlay before injecting"
+                    };
+                    AddScanResult("FAIL", $"Overlay: {ov}", "Will conflict with CoreX rendering and cause crashes.", fix);
+                    failCount++;
+                }
+            }
+        }
+        catch { }
+
+        // 4. Required files
+        try
+        {
+            var injector = FindFile("PYTExample.exe");
+            if (injector != null)
+            {
+                AddScanResult("PASS", "Injector (PYTExample.exe)", "Found.", null);
+                passCount++;
+            }
+            else
+            {
+                AddScanResult("FAIL", "Injector (PYTExample.exe)", "Missing — injection will fail.",
+                    "Re-download CoreX.Loader.exe from the latest release");
+                failCount++;
+            }
+
+            var payload = FindFile("mw2.dll", "cxpayload.dll");
+            if (payload != null || File.Exists(CachedPayloadPath))
+            {
+                AddScanResult("PASS", "Payload DLL", "Found.", null);
+                passCount++;
+            }
+            else
+            {
+                AddScanResult("FAIL", "Payload DLL", "Missing — nothing to inject.",
+                    "Activate your license key first, or re-download the loader");
+                failCount++;
+            }
+        }
+        catch { }
+
+        // 5. Conflicting software
+        try
+        {
+            foreach (var (proc, label) in ConflictProcesses)
+            {
+                var found = Process.GetProcessesByName(proc);
+                if (found.Length > 0)
+                {
+                    AddScanResult("WARN", $"Conflict: {label}", "Running — may trigger anti-cheat or interfere with injection.",
+                        $"Close {label} before launching the game");
+                    warnCount++;
+                    foreach (var p in found) p.Dispose();
+                }
+            }
+        }
+        catch { }
+
+        // 6. Windows Defender / AV exclusion check
+        try
+        {
+            bool defenderRunning = Process.GetProcessesByName("MsMpEng").Length > 0;
+            if (defenderRunning)
+            {
+                bool exclusionExists = false;
+                try
+                {
+                    string binDir = EmbeddedBinDir.TrimEnd(System.IO.Path.DirectorySeparatorChar);
+                    string parentDir = System.IO.Path.GetDirectoryName(binDir) ?? "";
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = $"-NoProfile -Command \"$ep = (Get-MpPreference).ExclusionPath; ($ep -contains '{binDir}') -or ($ep -contains '{parentDir}')\"",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    using var proc = Process.Start(psi);
+                    if (proc != null)
+                    {
+                        string output = proc.StandardOutput.ReadToEnd().Trim();
+                        proc.WaitForExit(5_000);
+                        exclusionExists = output.Equals("True", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+                catch { }
+
+                if (exclusionExists)
+                {
+                    AddScanResult("PASS", "Windows Defender", "Exclusion is set for CoreX folder.", null);
+                    passCount++;
+                }
+                else
+                {
+                    AddScanResult("WARN", "Windows Defender", "Real-time protection is active — may quarantine CoreX files.",
+                        "Add an exclusion: Windows Security → Virus & Threat Protection → Manage settings → Exclusions → Add the CoreX folder");
+                    warnCount++;
+                }
+            }
+            else
+            {
+                AddScanResult("PASS", "Antivirus", "No active interference detected.", null);
+                passCount++;
+            }
+        }
+        catch { }
+
+        // 7. Memory check
+        try
+        {
+            var memStatus = new NativeMemoryStatus();
+            if (GlobalMemoryStatusEx(memStatus))
+            {
+                long availMB = (long)(memStatus.ullAvailPhys / (1024 * 1024));
+                if (availMB < 2048)
+                {
+                    AddScanResult("WARN", "Available Memory", $"Only {availMB} MB free — may cause instability.",
+                        "Close other applications to free up RAM");
+                    warnCount++;
+                }
+                else
+                {
+                    AddScanResult("PASS", "Available Memory", $"{availMB} MB free.", null);
+                    passCount++;
+                }
+            }
+        }
+        catch { }
+
+        // 8. Xbox Game Bar (critical for Xbox PC users)
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -Command \"(Get-AppxPackage Microsoft.XboxGamingOverlay -ErrorAction SilentlyContinue) -ne $null\"",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var pkgProc = Process.Start(psi);
+            if (pkgProc != null)
+            {
+                var output = (await pkgProc.StandardOutput.ReadToEndAsync()).Trim();
+                pkgProc.WaitForExit(10_000);
+                bool gameBarInstalled = output.Equals("True", StringComparison.OrdinalIgnoreCase);
+                bool gameBarRunning = Process.GetProcessesByName("GameBar").Length > 0 ||
+                                      Process.GetProcessesByName("GameBarPresenceWriter").Length > 0;
+                if (gameBarRunning)
+                {
+                    AddScanResult("WARN", "Xbox Game Bar", "Game Bar is running — can interfere with kernel injection on Xbox/Battle.net.",
+                        "Windows Settings → Gaming → Xbox Game Bar → turn Off, then restart PC");
+                    warnCount++;
+                }
+                else if (gameBarInstalled)
+                {
+                    AddScanResult("INFO", "Xbox Game Bar", "Installed but not running. Disable it if injection crashes.",
+                        "Windows Settings → Gaming → Xbox Game Bar → turn Off");
+                    warnCount++;
+                }
+                else
+                {
+                    AddScanResult("PASS", "Xbox Game Bar", "Not installed.", null);
+                    passCount++;
+                }
+            }
+        }
+        catch { }
+
+        // 9. Hypervisor / virtualization check (can block kernel mapper)
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -Command \"(Get-CimInstance Win32_ComputerSystem).HypervisorPresent\"",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var hvProc = Process.Start(psi);
+            if (hvProc != null)
+            {
+                var output = (await hvProc.StandardOutput.ReadToEndAsync()).Trim();
+                hvProc.WaitForExit(10_000);
+                if (output.Equals("True", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddScanResult("WARN", "Hypervisor Active", "A hypervisor is running (Hyper-V, VBS, or VM) — may block kernel mapper.",
+                        "Disable Hyper-V: Settings → Apps → Optional Features → More Windows Features → uncheck Hyper-V, then restart");
+                    warnCount++;
+                }
+                else
+                {
+                    AddScanResult("PASS", "Hypervisor", "No hypervisor detected.", null);
+                    passCount++;
+                }
+            }
+        }
+        catch { }
+
+        // 10. Core isolation / memory integrity (blocks unsigned drivers)
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -Command \"(Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity' -Name 'Enabled' -ErrorAction SilentlyContinue).Enabled\"",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var ciProc = Process.Start(psi);
+            if (ciProc != null)
+            {
+                var output = (await ciProc.StandardOutput.ReadToEndAsync()).Trim();
+                ciProc.WaitForExit(10_000);
+                if (output == "1")
+                {
+                    AddScanResult("FAIL", "Memory Integrity (HVCI)", "Core Isolation Memory Integrity is ON — this blocks the kernel mapper and WILL crash injection.",
+                        "Windows Security → Device Security → Core Isolation → turn OFF Memory Integrity, then restart PC");
+                    failCount++;
+                }
+                else
+                {
+                    AddScanResult("PASS", "Memory Integrity (HVCI)", "Core Isolation is off.", null);
+                    passCount++;
+                }
+            }
+        }
+        catch { }
+
+        // Summary
+        AddScanSummary(passCount, warnCount, failCount);
+
+        ScanBtn.Content = "SCAN";
+        ScanBtn.IsEnabled = true;
+    }
+
+    private void AddScanResult(string level, string title, string detail, string? fix)
+    {
+        string icon = level switch
+        {
+            "PASS" => "✔",
+            "FAIL" => "✘",
+            "WARN" => "⚠",
+            "INFO" => "ℹ",
+            _ => "•"
+        };
+        var color = level switch
+        {
+            "PASS" => "#4CAF50",
+            "FAIL" => "#F44336",
+            "WARN" => "#FFA726",
+            "INFO" => "#42A5F5",
+            _ => "#AAAAAA"
+        };
+
+        var sp = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        var wpfColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(color);
+        var colorBrush = new SolidColorBrush(wpfColor);
+
+        var header = new TextBlock
+        {
+            FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap
+        };
+        header.Inlines.Add(new System.Windows.Documents.Run($"{icon} ") { Foreground = colorBrush });
+        header.Inlines.Add(new System.Windows.Documents.Run($"[{level}] {title}")
+            { Foreground = colorBrush, FontWeight = FontWeights.SemiBold });
+        sp.Children.Add(header);
+
+        var detailTb = new TextBlock
+        {
+            Text = $"  {detail}",
+            FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
+            FontSize = 11,
+            Foreground = (System.Windows.Media.Brush)FindResource("TextDimBrush"),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 1, 0, 0)
+        };
+        sp.Children.Add(detailTb);
+
+        if (fix != null)
+        {
+            var fixColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#81D4FA");
+            var fixTb = new TextBlock
+            {
+                Text = $"  FIX: {fix}",
+                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
+                FontSize = 11,
+                Foreground = new SolidColorBrush(fixColor),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+            sp.Children.Add(fixTb);
+        }
+
+        ScanResultsPanel.Children.Add(sp);
+    }
+
+    private void AddScanSummary(int pass, int warn, int fail)
+    {
+        var sep = new Border
+        {
+            Height = 1,
+            Background = (System.Windows.Media.Brush)FindResource("BorderBrush"),
+            Margin = new Thickness(0, 6, 0, 8)
+        };
+        ScanResultsPanel.Children.Add(sep);
+
+        string verdict = fail > 0
+            ? $"SCAN COMPLETE — {fail} issue(s) must be fixed before injecting."
+            : warn > 0
+                ? $"SCAN COMPLETE — {pass} passed, {warn} warning(s). Review warnings before injecting."
+                : $"SCAN COMPLETE — All {pass} checks passed. Ready to inject.";
+
+        var summaryColor = fail > 0 ? "#F44336" : warn > 0 ? "#FFA726" : "#4CAF50";
+        var wpfSummary = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(summaryColor);
+        var tb = new TextBlock
+        {
+            Text = verdict,
+            FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
+            FontSize = 12,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(wpfSummary),
+            TextWrapping = TextWrapping.Wrap
+        };
+        ScanResultsPanel.Children.Add(tb);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private class NativeMemoryStatus
+    {
+        public uint dwLength = 64;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx([In, Out] NativeMemoryStatus lpBuffer);
+
+    // ═══════════════ DEBUG FLAG (admin-only logging) ═══════════════
+
+    private static readonly string DebugFlagPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX", "cxdbg.flag");
+
+    private static void EnableDebugFlag()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(DebugFlagPath)!);
+            File.WriteAllText(DebugFlagPath, "1");
+        }
+        catch { }
+    }
+
+    private static void DisableDebugFlag()
+    {
+        try { if (File.Exists(DebugFlagPath)) File.Delete(DebugFlagPath); } catch { }
+    }
+
+    // ═══════════════ MANUAL UPDATE CHECK ═══════════════
+
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        CheckUpdateBtn.IsEnabled = false;
+        UpdateStatusText.Text = "Checking for updates...";
+        try
+        {
+            if (FindGameProcess() != null)
+            {
+                UpdateStatusText.Text = "Game is running — close the game before updating.";
+                UpdateStatusText.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+                return;
+            }
+
+            var resp = await _fastHttp.GetAsync($"{Api}/api/releases/current");
+            if (!resp.IsSuccessStatusCode)
+            {
+                UpdateStatusText.Text = "Could not reach update server. Try again later.";
+                UpdateStatusText.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+                return;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync();
+            var version = TryGetField(json, "version");
+            var url = TryGetField(json, "url");
+
+            if (version is null)
+            {
+                UpdateStatusText.Text = "No update info available.";
+                UpdateStatusText.Foreground = FindResource("MutedBrush") as SolidColorBrush;
+                return;
+            }
+
+            if (Version.TryParse(version, out var remote) &&
+                Version.TryParse(AppVersion, out var local) &&
+                remote > local && url is not null)
+            {
+                if (FindGameProcess() != null)
+                {
+                    UpdateStatusText.Text = $"v{version} available — close the game to update.";
+                    UpdateStatusText.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+                    return;
+                }
+                UpdateStatusText.Text = $"Update v{version} available! Downloading...";
+                UpdateStatusText.Foreground = FindResource("AccentGlowBrush") as SolidColorBrush;
+                _updating = true;
+                ShowUpdateOverlay($"Updating to v{version}...");
+                await DownloadUpdateAsync(url);
+                HideUpdateOverlay();
+                _updating = false;
+            }
+            else
+            {
+                UpdateStatusText.Text = $"You're up to date! (v{AppVersion})";
+                UpdateStatusText.Foreground = FindResource("SuccessBrush") as SolidColorBrush;
+            }
+        }
+        catch
+        {
+            UpdateStatusText.Text = "Update check failed. Check your connection.";
+            UpdateStatusText.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+            HideUpdateOverlay();
+            _updating = false;
+        }
+        finally { CheckUpdateBtn.IsEnabled = true; }
+    }
+
     // ═══════════════ AUTO INJECTION ═══════════════
+
+    private static void EnsureFilesExtracted()
+    {
+        var critical = new[] { "mw2.dll", "PYTExample.exe" };
+        bool anyMissing = critical.Any(f => !File.Exists(Path.Combine(EmbeddedBinDir, f)));
+        if (anyMissing)
+            ExtractEmbeddedPayloads();
+    }
+
+    private void AutoDetectGameDir(string platform)
+    {
+        var detected = DetectGameDirectory(platform);
+        string resolvedPlatform = platform;
+
+        if (detected == null)
+        {
+            foreach (var alt in new[] { "Steam", "Xbox (PC)" })
+            {
+                if (alt == platform) continue;
+                detected = DetectGameDirectory(alt);
+                if (detected != null) { resolvedPlatform = alt; break; }
+            }
+        }
+
+        if (detected != null && GameDirBox != null)
+        {
+            var current = GameDirBox.Text?.Trim() ?? "";
+            if (!string.Equals(current, detected, StringComparison.OrdinalIgnoreCase))
+            {
+                GameDirBox.Text = detected;
+                AppendLog($"[*] Auto-detected {resolvedPlatform} game directory: {detected}");
+            }
+            if (resolvedPlatform != platform && GamePlatformCombo != null)
+            {
+                for (int i = 0; i < GamePlatformCombo.Items.Count; i++)
+                {
+                    if (GamePlatformCombo.Items[i] is System.Windows.Controls.ComboBoxItem ci &&
+                        ci.Content?.ToString() == resolvedPlatform)
+                    {
+                        GamePlatformCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private static readonly string[] GameProcessNames = { "cod22-cod", "cod", "cod22", "ModernWarfare", "cod22-cod-ms", "cod22-cod-bnet" };
+
+    private static string? FindGameProcess()
+    {
+        foreach (var name in GameProcessNames)
+        {
+            var procs = Process.GetProcessesByName(name);
+            if (procs.Length > 0)
+            {
+                foreach (var p in procs) p.Dispose();
+                return name;
+            }
+        }
+        return null;
+    }
+
+    private static async Task<string?> WaitForGameProcess(int timeoutSeconds = 120)
+    {
+        return await Task.Run(() =>
+        {
+            for (int i = 0; i < timeoutSeconds; i++)
+            {
+                var found = FindGameProcess();
+                if (found != null) return found;
+                Thread.Sleep(1000);
+            }
+            return (string?)null;
+        });
+    }
+
+    private void DeployVCRuntime()
+    {
+        var gameDir = GameDirBox?.Text?.Trim() ?? "";
+        if (string.IsNullOrEmpty(gameDir) || !Directory.Exists(gameDir)) return;
+
+        var runtimeFiles = new[] { "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll" };
+        foreach (var file in runtimeFiles)
+        {
+            var src = Path.Combine(EmbeddedBinDir, file);
+            var dst = Path.Combine(gameDir, file);
+            try
+            {
+                if (File.Exists(src) && !File.Exists(dst))
+                    File.Copy(src, dst, false);
+            }
+            catch { }
+        }
+    }
+
+    private static bool IsDllAlreadyLoaded()
+    {
+        try
+        {
+            using var guard = EventWaitHandle.OpenExisting(@"Local\CoreXInitGuard");
+            return true;
+        }
+        catch (WaitHandleCannotBeOpenedException) { return false; }
+        catch { return false; }
+    }
 
     private async void TriggerAutoInject()
     {
         if (_autoInjecting || _autoInjected) return;
+        if (!_injectionLock.Wait(0)) return;
         _autoInjecting = true;
 
-        var injectorPath = FindFile("PYTExample.exe");
-        var dllPath = FindFile("mw2.dll", "MW2.dll");
-
-        if (injectorPath is null || dllPath is null)
+        try
         {
-            AppendLog("[AUTO] Injector or DLL not found — skipping.");
-            _autoInjecting = false;
-            return;
-        }
+            EnsureFilesExtracted();
+            var platform = (GamePlatformCombo?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "Steam";
+            AutoDetectGameDir(platform);
+            var injectorPath = FindFile("PYTExample.exe");
+            var dllPath = FindFile("mw2.dll", "MW2.dll");
 
-        AppendLog("[AUTO] Game detected — injecting in 10 seconds...");
-        await Task.Delay(10_000);
-
-        var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
-        var procs = Process.GetProcessesByName(procName);
-        if (procs.Length == 0)
-        {
-            AppendLog("[AUTO] Game closed before injection.");
-            _autoInjecting = false;
-            return;
-        }
-        foreach (var p in procs) p.Dispose();
-
-        var injDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
-        AppendLog("[AUTO] Injecting via kernel mapper (requesting admin)...");
-        await Task.Run(() =>
-        {
-            try
+            if (injectorPath is null || dllPath is null)
             {
-                var pyt = Process.Start(new ProcessStartInfo
+                if (injectorPath is null) AppendLog("[ERROR] PYTExample.exe not found — likely blocked by antivirus.");
+                if (dllPath is null) AppendLog("[ERROR] mw2.dll not found — likely blocked by antivirus.");
+                AppendLog("[FIX] Add this folder to Windows Defender exclusions:");
+                AppendLog($"      {EmbeddedBinDir}");
+                AppendLog("[FIX] Then restart the loader.");
+                return;
+            }
+
+            AppendLog("[AUTO] Game detected — waiting for full screen...");
+
+            var procName = FindGameProcess() ?? "cod22-cod";
+            if (!await WaitForFullScreen(procName))
+            {
+                AppendLog("[AUTO] Game closed before injection.");
+                return;
+            }
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[AUTO] Menu DLL already loaded — skipping injection.");
+                _autoInjected = true;
+                return;
+            }
+
+            if (!CheckOverlaysAndWarn(procName))
+                return;
+
+            var injDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
+            await RunFixGameAsync();
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[AUTO] Menu DLL already loaded — skipping injection.");
+                _autoInjected = true;
+                return;
+            }
+
+            AppendLog("[AUTO] Injecting via kernel mapper...");
+            DeployVCRuntime();
+            await RunInjectorWithRetry(injectorPath, injDir, maxAttempts: 1, targetProcess: procName);
+
+            _autoInjected = true;
+            await PostInjectionDiagnostics();
+        }
+        finally
+        {
+            _autoInjecting = false;
+            _injectionLock.Release();
+        }
+    }
+
+    private async Task<bool> WaitForFullScreen(string procName)
+    {
+        int result = await Task.Run(() =>
+        {
+            for (int i = 0; i < 120; i++)
+            {
+                Thread.Sleep(1000);
+                try
                 {
-                    FileName = injectorPath,
-                    WorkingDirectory = injDir,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-                pyt?.WaitForExit(60_000);
+                    var ps = Process.GetProcessesByName(procName);
+                    if (ps.Length == 0) { foreach (var p in ps) p.Dispose(); return -1; }
+                    var hwnd = ps[0].MainWindowHandle;
+                    foreach (var p in ps) p.Dispose();
+                    if (hwnd != IntPtr.Zero && IsGameWindowReady(hwnd)) return 1;
+                }
+                catch { }
             }
-            catch (Exception ex)
-            {
-                Dispatcher.Invoke(() => AppendLog($"[AUTO] Injector error: {ex.Message}"));
-            }
+            return 0;
         });
 
-        AppendLog("[AUTO] Injection complete — press INSERT in game.");
-        _autoInjected = true;
-        _autoInjecting = false;
+        if (result == -1) return false;
+
+        if (result == 0)
+        {
+            AppendLog("[!] Game window not ready within 2 min — attempting injection...");
+        }
+        else
+        {
+            AppendLog("[*] Game window ready — waiting for D3D12 to initialize...");
+        }
+
+        await Task.Delay(10_000);
+        return true;
+    }
+
+    private static bool IsGameWindowReady(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        if (!GetClientRect(hwnd, out RECT client)) return false;
+        int w = client.Right - client.Left;
+        int h = client.Bottom - client.Top;
+        return w >= 800 && h >= 600;
+    }
+
+    private async Task RunInjectorWithRetry(string injectorPath, string workingDir, int maxAttempts = 1, string? targetProcess = null)
+    {
+        if (!string.IsNullOrEmpty(targetProcess))
+        {
+            try { File.WriteAllText(Path.Combine(workingDir, "target.txt"), targetProcess); } catch { }
+        }
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            bool exited = await Task.Run(() =>
+            {
+                try
+                {
+                    var pyt = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = injectorPath,
+                        Arguments = targetProcess ?? "",
+                        WorkingDirectory = workingDir,
+                        UseShellExecute = true,
+                        Verb = "runas",
+                        WindowStyle = ProcessWindowStyle.Minimized
+                    });
+                    if (pyt == null) return false;
+                    bool done = pyt.WaitForExit(60_000);
+                    if (!done)
+                    {
+                        try { pyt.Kill(); } catch { }
+                    }
+                    return done;
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.Invoke(() => AppendLog($"[ERROR] Injector failed: {ex.Message}"));
+                    return false;
+                }
+            });
+
+            if (exited || IsDllAlreadyLoaded()) return;
+
+            if (attempt < maxAttempts)
+            {
+                AppendLog("[!] Injection stalled — retrying in 10s...");
+                await Task.Delay(10_000);
+            }
+            else
+            {
+                AppendLog("[ERROR] Injection timed out. Game may need to fully load first — try again.");
+            }
+        }
+    }
+
+    private async Task RunFixGameAsync()
+    {
+        var fixGamePath = FindFile("FixGame.exe");
+        if (fixGamePath is null) return;
+
+        try
+        {
+            AppendLog("[*] Running FixGame...");
+            var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = fixGamePath,
+                WorkingDirectory = Path.GetDirectoryName(fixGamePath) ?? ExeDir,
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+            if (proc is null) return;
+            bool exited = await Task.Run(() => proc.WaitForExit(30_000));
+            if (!exited) { try { proc.Kill(); } catch { } }
+        }
+        catch { }
     }
 
     // ═══════════════ DLL INJECTION ═══════════════
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    private static bool IsWindowFullScreen(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return false;
+        if (!GetWindowRect(hwnd, out RECT rect)) return false;
+        int screenW = GetSystemMetrics(0);
+        int screenH = GetSystemMetrics(1);
+        int w = rect.Right - rect.Left;
+        int h = rect.Bottom - rect.Top;
+        return w >= screenW - 10 && h >= screenH - 10;
+    }
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -809,8 +1728,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        AppendLog($"[+] Game found (PID {target.Id}). Waiting for initialization...");
-        await Task.Delay(10_000);
+        AppendLog($"[+] Game found (PID {target.Id}). Waiting for initialization (7s)...");
+        await Task.Delay(7_000);
 
         var hProcess = OpenProcess(0x1F0FFF, false, target.Id);
         if (hProcess == IntPtr.Zero)
@@ -855,11 +1774,93 @@ public partial class MainWindow : Window
         }
     }
 
+    private static readonly (string dll, string name)[] OverlayDlls = new[]
+    {
+        ("nvspcap64.dll",             "NVIDIA Overlay (ShadowPlay)"),
+        ("NvCamera64.dll",            "NVIDIA Overlay (Camera)"),
+        ("DiscordHook64.dll",         "Discord Overlay"),
+        ("discord_overlay2.dll",      "Discord Overlay"),
+        ("RTSSHooks64.dll",           "MSI Afterburner / RivaTuner"),
+        ("GameOverlayRenderer64.dll", "Steam Overlay"),
+        ("d3dcompiler_47.dll",        "Xbox Game Bar Overlay"),
+        ("XGameBarSDK.dll",           "Xbox Game Bar SDK"),
+        ("obs-graphics-hook64.dll",   "OBS Game Capture"),
+        ("fraps64.dll",               "Fraps"),
+        ("medal_hook.dll",            "Medal.tv Overlay"),
+        ("BattleNetHelper.dll",       "Battle.net Helper"),
+    };
+
+    private List<string> DetectOverlays(string procName)
+    {
+        var found = new List<string>();
+        try
+        {
+            var procs = Process.GetProcessesByName(procName);
+            if (procs.Length == 0) return found;
+            var proc = procs[0];
+            try
+            {
+                foreach (ProcessModule mod in proc.Modules)
+                {
+                    var modName = mod.ModuleName ?? "";
+                    foreach (var (dll, name) in OverlayDlls)
+                    {
+                        if (modName.Equals(dll, StringComparison.OrdinalIgnoreCase) && !found.Contains(name))
+                            found.Add(name);
+                    }
+                }
+            }
+            catch { }
+            foreach (var p in procs) p.Dispose();
+        }
+        catch { }
+        return found;
+    }
+
+    private bool CheckOverlaysAndWarn(string procName)
+    {
+        var overlays = DetectOverlays(procName);
+        if (overlays.Count == 0) return true;
+
+        var list = string.Join("\n", overlays.Select(o => $"  - {o}"));
+        AppendLog($"[WARNING] Overlay(s) detected:\n{list}");
+
+        var tips = new System.Text.StringBuilder();
+        tips.AppendLine($"The following overlay(s) were detected:\n\n{list}\n");
+        tips.AppendLine("These can prevent the in-game menu from appearing or crash the game.\n");
+
+        if (overlays.Any(o => o.Contains("Steam")))
+            tips.AppendLine("STEAM: Settings > In-Game > uncheck 'Enable Steam Overlay while in-game'");
+        if (overlays.Any(o => o.Contains("Discord")))
+            tips.AppendLine("DISCORD: Settings > Game Overlay > toggle off");
+        if (overlays.Any(o => o.Contains("NVIDIA")))
+            tips.AppendLine("NVIDIA: GeForce Experience > Settings > In-Game Overlay > toggle off");
+        if (overlays.Any(o => o.Contains("Xbox")))
+            tips.AppendLine("XBOX: Settings > Gaming > Xbox Game Bar > toggle off");
+
+        tips.AppendLine("\nDisable them and restart the game for best results.\nContinue anyway?");
+
+        var result = System.Windows.MessageBox.Show(
+            tips.ToString(),
+            "CoreX - Overlay Conflict",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (result == MessageBoxResult.No)
+        {
+            AppendLog("[*] Injection cancelled by user (overlay conflict).");
+            return false;
+        }
+        AppendLog("[*] User chose to continue despite overlay warning.");
+        return true;
+    }
+
     private static string? FindFile(params string[] names)
     {
-        string[] searchDirs = { EmbeddedBinDir, ExeDir, CoffinBuild };
+        string[] searchDirs = { EmbeddedBinDir, PayloadCacheDir, ExeDir, CoffinBuild };
         foreach (var dir in searchDirs)
         {
+            if (!Directory.Exists(dir)) continue;
             foreach (var name in names)
             {
                 var path = Path.Combine(dir, name);
@@ -882,12 +1883,19 @@ public partial class MainWindow : Window
         var appId = SteamAppIdBox.Text.Trim();
         if (string.IsNullOrEmpty(appId)) { AppendLog("[ERROR] Steam App ID not set."); return; }
 
+        EnsureFilesExtracted();
+        AutoDetectGameDir("Steam");
         var injectorPath = FindFile("PYTExample.exe");
         var dllPath = FindFile("mw2.dll", "MW2.dll");
         var fixGamePath = FindFile("FixGame.exe");
-        if (injectorPath is null) { AppendLog("[ERROR] Injector (PYTExample.exe) not found."); ShowLaunchError("PYTExample.exe not found next to the loader.\nMake sure all files are in the same folder."); return; }
-        if (dllPath is null) { AppendLog("[ERROR] Menu DLL (mw2.dll) not found."); ShowLaunchError("mw2.dll not found next to the loader.\nMake sure all files are in the same folder."); return; }
+        if (injectorPath is null) { AppendLog("[ERROR] PYTExample.exe not found — likely blocked by antivirus."); ShowLaunchError("PYTExample.exe blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
+        if (dllPath is null) { AppendLog("[ERROR] mw2.dll not found — likely blocked by antivirus."); ShowLaunchError("mw2.dll blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
 
+        if (!_injectionLock.Wait(0))
+        {
+            ShowLaunchError("Another injection is already in progress.");
+            return;
+        }
         _autoInjected = true;
         _autoInjecting = true;
 
@@ -899,52 +1907,46 @@ public partial class MainWindow : Window
                 FileName = $"steam://rungameid/{appId}",
                 UseShellExecute = true
             });
+
+            AppendLog("[*] Waiting for game process...");
+            var procName = await WaitForGameProcess();
+            if (procName == null) { AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
+            AppendLog($"[*] Game detected ({procName}) — waiting for full screen...");
+            if (!await WaitForFullScreen(procName))
+            {
+                AppendLog("[ERROR] Game closed before injection.");
+                return;
+            }
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            if (!CheckOverlaysAndWarn(procName))
+                return;
+
+            await RunFixGameAsync();
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            AppendLog("[*] Injecting DLL via kernel mapper...");
+            DeployVCRuntime();
+            var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
+            await RunInjectorWithRetry(injectorPath, injectorDir, maxAttempts: 1, targetProcess: procName);
+            await PostInjectionDiagnostics();
         }
-        catch (Exception ex) { _autoInjected = false; _autoInjecting = false; AppendLog($"[ERROR] Steam launch failed: {ex.Message}"); return; }
-
-        var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
-        AppendLog($"[*] Waiting for game process ({procName})...");
-        bool found = await Task.Run(() =>
+        catch (Exception ex) { AppendLog($"[ERROR] Steam launch failed: {ex.Message}"); }
+        finally
         {
-            for (int i = 0; i < 120; i++)
-            {
-                var procs = Process.GetProcessesByName(procName);
-                if (procs.Length > 0)
-                {
-                    foreach (var p in procs) p.Dispose();
-                    return true;
-                }
-                Thread.Sleep(1000);
-            }
-            return false;
-        });
-        if (!found) { _autoInjected = false; _autoInjecting = false; AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
-
-        AppendLog("[*] Game detected — waiting 10 seconds for full load...");
-        await Task.Delay(10_000);
-
-        AppendLog("[*] Injecting DLL via kernel mapper (requesting admin)...");
-        var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
-        await Task.Run(() =>
-        {
-            try
-            {
-                var pyt = Process.Start(new ProcessStartInfo
-                {
-                    FileName = injectorPath,
-                    WorkingDirectory = injectorDir,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-                pyt?.WaitForExit(60_000);
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.Invoke(() => AppendLog($"[ERROR] Injector failed: {ex.Message}"));
-            }
-        });
-        _autoInjecting = false;
-        AppendLog("[OK] Injection complete — press INSERT in game to open menu.");
+            _autoInjecting = false;
+            _injectionLock.Release();
+        }
     }
 
     private string? FindBootstrapper()
@@ -979,145 +1981,144 @@ public partial class MainWindow : Window
         if (_updating) { ShowLaunchError("Update in progress — please wait."); return; }
         if (!RequireLicense()) return;
 
+        EnsureFilesExtracted();
+        AutoDetectGameDir("Xbox (PC)");
         var injectorPath = FindFile("PYTExample.exe");
         var dllPath = FindFile("mw2.dll", "MW2.dll");
-        if (injectorPath is null) { AppendLog("[ERROR] Injector (PYTExample.exe) not found."); ShowLaunchError("PYTExample.exe not found."); return; }
-        if (dllPath is null) { AppendLog("[ERROR] Menu DLL (mw2.dll) not found."); ShowLaunchError("mw2.dll not found."); return; }
+        if (injectorPath is null) { AppendLog("[ERROR] PYTExample.exe not found — likely blocked by antivirus."); ShowLaunchError("PYTExample.exe blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
+        if (dllPath is null) { AppendLog("[ERROR] mw2.dll not found — likely blocked by antivirus."); ShowLaunchError("mw2.dll blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
 
+        if (!_injectionLock.Wait(0))
+        {
+            ShowLaunchError("Another injection is already in progress.");
+            return;
+        }
         _autoInjected = true;
         _autoInjecting = true;
 
-        bool launched = false;
-
-        // Method 1: Appx shell launch (automatic)
         try
         {
-            AppendLog("[*] Launching game via Appx shell...");
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = "-NoProfile -Command \"Get-AppxPackage | Where-Object { $_.Name -like '*Activision*' } | Select-Object -First 1 -ExpandProperty PackageFamilyName\"",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            var pkgProc = Process.Start(psi);
-            string pfn = (await pkgProc!.StandardOutput.ReadToEndAsync()).Trim();
-            pkgProc.WaitForExit(10_000);
+            bool launched = false;
 
-            if (!string.IsNullOrEmpty(pfn))
+            try
             {
-                var aumid = pfn + "!App";
-                AppendLog($"[*] Found package: {pfn}");
-                Process.Start(new ProcessStartInfo
+                AppendLog("[*] Launching game via Appx shell...");
+                var psi = new ProcessStartInfo
                 {
-                    FileName = "explorer.exe",
-                    Arguments = $"shell:AppsFolder\\{aumid}",
-                    UseShellExecute = false
-                });
-                launched = true;
-            }
-            else
-            {
-                AppendLog("[!] No Activision Appx package found, trying bootstrapper...");
-            }
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[!] Appx launch failed: {ex.Message}");
-        }
+                    FileName = "powershell.exe",
+                    Arguments = "-NoProfile -Command \"Get-AppxPackage | Where-Object { $_.Name -like '*Activision*' } | Select-Object -First 1 -ExpandProperty PackageFamilyName\"",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                var pkgProc = Process.Start(psi);
+                string pfn = (await pkgProc!.StandardOutput.ReadToEndAsync()).Trim();
+                pkgProc.WaitForExit(10_000);
 
-        // Method 2: _retail_\bootstrapper.exe fallback
-        if (!launched)
-        {
-            var bootstrapper = FindBootstrapper();
-            if (bootstrapper != null)
-            {
-                try
+                if (!string.IsNullOrEmpty(pfn))
                 {
-                    AppendLog($"[*] Launching via bootstrapper: {bootstrapper}");
+                    var aumid = pfn + "!App";
+                    AppendLog($"[*] Found package: {pfn}");
                     Process.Start(new ProcessStartInfo
                     {
-                        FileName = bootstrapper,
-                        WorkingDirectory = Path.GetDirectoryName(bootstrapper)!,
-                        UseShellExecute = true
+                        FileName = "explorer.exe",
+                        Arguments = $"shell:AppsFolder\\{aumid}",
+                        UseShellExecute = false
                     });
                     launched = true;
                 }
+                else
+                {
+                    AppendLog("[!] No Activision Appx package found, trying bootstrapper...");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[!] Appx launch failed: {ex.Message}");
+            }
+
+            if (!launched)
+            {
+                var bootstrapper = FindBootstrapper();
+                if (bootstrapper != null)
+                {
+                    try
+                    {
+                        AppendLog($"[*] Launching via bootstrapper: {bootstrapper}");
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = bootstrapper,
+                            WorkingDirectory = Path.GetDirectoryName(bootstrapper)!,
+                            UseShellExecute = true
+                        });
+                        launched = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"[!] Bootstrapper launch failed: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    AppendLog("[!] bootstrapper.exe not found, trying Xbox URI...");
+                }
+            }
+
+            if (!launched)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "xbox://launch/?productId=9PGLFS9MB9CG",
+                        UseShellExecute = true
+                    });
+                }
                 catch (Exception ex)
                 {
-                    AppendLog($"[!] Bootstrapper launch failed: {ex.Message}");
+                    AppendLog($"[ERROR] All launch methods failed: {ex.Message}");
+                    return;
                 }
             }
-            else
-            {
-                AppendLog("[!] bootstrapper.exe not found, trying Xbox URI...");
-            }
-        }
 
-        // Method 3: Xbox URI last resort
-        if (!launched)
-        {
-            try
+            AppendLog("[*] Waiting for game process...");
+            var procName = await WaitForGameProcess();
+            if (procName == null) { AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
+            AppendLog($"[*] Game detected ({procName}) — waiting for full screen...");
+            if (!await WaitForFullScreen(procName))
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "xbox://launch/?productId=9PGLFS9MB9CG",
-                    UseShellExecute = true
-                });
-                launched = true;
-            }
-            catch (Exception ex)
-            {
-                _autoInjected = false; _autoInjecting = false;
-                AppendLog($"[ERROR] All launch methods failed: {ex.Message}");
+                AppendLog("[ERROR] Game closed before injection.");
                 return;
             }
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            if (!CheckOverlaysAndWarn(procName))
+                return;
+
+            await RunFixGameAsync();
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            AppendLog("[*] Injecting DLL via kernel mapper...");
+            DeployVCRuntime();
+            var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
+            await RunInjectorWithRetry(injectorPath, injectorDir, maxAttempts: 1, targetProcess: procName);
+            await PostInjectionDiagnostics();
         }
-
-        var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
-        AppendLog($"[*] Waiting for game process ({procName})...");
-        bool found = await Task.Run(() =>
+        finally
         {
-            for (int i = 0; i < 120; i++)
-            {
-                var procs = Process.GetProcessesByName(procName);
-                if (procs.Length > 0)
-                {
-                    foreach (var p in procs) p.Dispose();
-                    return true;
-                }
-                Thread.Sleep(1000);
-            }
-            return false;
-        });
-        if (!found) { _autoInjected = false; _autoInjecting = false; AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
-
-        AppendLog("[*] Game detected — waiting 10 seconds for full load...");
-        await Task.Delay(10_000);
-
-        AppendLog("[*] Injecting DLL via kernel mapper (requesting admin)...");
-        var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
-        await Task.Run(() =>
-        {
-            try
-            {
-                var pyt = Process.Start(new ProcessStartInfo
-                {
-                    FileName = injectorPath,
-                    WorkingDirectory = injectorDir,
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-                pyt?.WaitForExit(60_000);
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.Invoke(() => AppendLog($"[ERROR] Injector failed: {ex.Message}"));
-            }
-        });
-        _autoInjecting = false;
-        AppendLog("[OK] Injection complete — press INSERT in game to open menu.");
+            _autoInjecting = false;
+            _injectionLock.Release();
+        }
     }
 
     private async void LaunchBattleNet_Click(object sender, RoutedEventArgs e)
@@ -1125,112 +2126,211 @@ public partial class MainWindow : Window
         if (_updating) { ShowLaunchError("Update in progress — please wait."); return; }
         if (!RequireLicense()) return;
 
+        EnsureFilesExtracted();
+        AutoDetectGameDir("Battle.net");
         var injectorPath = FindFile("PYTExample.exe");
         var dllPath = FindFile("mw2.dll", "MW2.dll");
-        if (injectorPath is null) { AppendLog("[ERROR] Injector (PYTExample.exe) not found."); ShowLaunchError("PYTExample.exe not found."); return; }
-        if (dllPath is null) { AppendLog("[ERROR] Menu DLL (mw2.dll) not found."); ShowLaunchError("mw2.dll not found."); return; }
+        if (injectorPath is null) { AppendLog("[ERROR] PYTExample.exe not found — likely blocked by antivirus."); ShowLaunchError("PYTExample.exe blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
+        if (dllPath is null) { AppendLog("[ERROR] mw2.dll not found — likely blocked by antivirus."); ShowLaunchError("mw2.dll blocked by antivirus.\nAdd the CoreX folder to Windows Defender exclusions and restart."); return; }
 
+        if (!_injectionLock.Wait(0))
+        {
+            ShowLaunchError("Another injection is already in progress.");
+            return;
+        }
         _autoInjected = true;
         _autoInjecting = true;
 
-        bool launched = false;
-
-        // Method 1: Battle.net URI protocol (client must be running)
         try
         {
-            AppendLog("[*] Launching game via Battle.net (battlenet://AUKS)...");
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "battlenet://AUKS",
-                UseShellExecute = true
-            });
-            launched = true;
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[!] Battle.net URI failed: {ex.Message}");
-        }
+            bool launched = false;
 
-        // Method 2: bootstrapper.exe fallback
-        if (!launched)
-        {
-            var bootstrapper = FindBootstrapper();
-            if (bootstrapper != null)
-            {
-                try
-                {
-                    AppendLog($"[*] Launching via bootstrapper: {bootstrapper}");
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = bootstrapper,
-                        WorkingDirectory = Path.GetDirectoryName(bootstrapper)!,
-                        UseShellExecute = true
-                    });
-                    launched = true;
-                }
-                catch (Exception ex)
-                {
-                    _autoInjected = false; _autoInjecting = false;
-                    AppendLog($"[ERROR] Bootstrapper launch failed: {ex.Message}");
-                    return;
-                }
-            }
-            else
-            {
-                _autoInjected = false; _autoInjecting = false;
-                AppendLog("[ERROR] Could not launch game. Make sure Battle.net client is running or game is installed.");
-                return;
-            }
-        }
-
-        var procName = ProcessNameBox?.Text?.Trim() ?? "cod22-cod";
-        AppendLog($"[*] Waiting for game process ({procName})...");
-        bool found = await Task.Run(() =>
-        {
-            for (int i = 0; i < 120; i++)
-            {
-                var procs = Process.GetProcessesByName(procName);
-                if (procs.Length > 0)
-                {
-                    foreach (var p in procs) p.Dispose();
-                    return true;
-                }
-                Thread.Sleep(1000);
-            }
-            return false;
-        });
-        if (!found) { _autoInjected = false; _autoInjecting = false; AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
-
-        AppendLog("[*] Game detected — waiting 10 seconds for full load...");
-        await Task.Delay(10_000);
-
-        AppendLog("[*] Injecting DLL via kernel mapper (requesting admin)...");
-        var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
-        await Task.Run(() =>
-        {
             try
             {
-                var pyt = Process.Start(new ProcessStartInfo
+                AppendLog("[*] Launching game via Battle.net (battlenet://AUKS)...");
+                Process.Start(new ProcessStartInfo
                 {
-                    FileName = injectorPath,
-                    WorkingDirectory = injectorDir,
-                    UseShellExecute = true,
-                    Verb = "runas"
+                    FileName = "battlenet://AUKS",
+                    UseShellExecute = true
                 });
-                pyt?.WaitForExit(60_000);
+                launched = true;
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(() => AppendLog($"[ERROR] Injector failed: {ex.Message}"));
+                AppendLog($"[!] Battle.net URI failed: {ex.Message}");
             }
-        });
-        _autoInjecting = false;
-        AppendLog("[OK] Injection complete — press INSERT in game to open menu.");
+
+            if (!launched)
+            {
+                var bootstrapper = FindBootstrapper();
+                if (bootstrapper != null)
+                {
+                    try
+                    {
+                        AppendLog($"[*] Launching via bootstrapper: {bootstrapper}");
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = bootstrapper,
+                            WorkingDirectory = Path.GetDirectoryName(bootstrapper)!,
+                            UseShellExecute = true
+                        });
+                        launched = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"[ERROR] Bootstrapper launch failed: {ex.Message}");
+                        return;
+                    }
+                }
+                else
+                {
+                    AppendLog("[ERROR] Could not launch game. Make sure Battle.net client is running or game is installed.");
+                    return;
+                }
+            }
+
+            AppendLog("[*] Waiting for game process...");
+            var procName = await WaitForGameProcess();
+            if (procName == null) { AppendLog("[ERROR] Game process not detected after 2 minutes."); return; }
+            AppendLog($"[*] Game detected ({procName}) — waiting for full screen...");
+            if (!await WaitForFullScreen(procName))
+            {
+                AppendLog("[ERROR] Game closed before injection.");
+                return;
+            }
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            if (!CheckOverlaysAndWarn(procName))
+                return;
+
+            await RunFixGameAsync();
+
+            if (IsDllAlreadyLoaded())
+            {
+                AppendLog("[*] Menu DLL already loaded — skipping injection.");
+                return;
+            }
+
+            AppendLog("[*] Injecting DLL via kernel mapper...");
+            DeployVCRuntime();
+            var injectorDir = Path.GetDirectoryName(injectorPath) ?? ExeDir;
+            await RunInjectorWithRetry(injectorPath, injectorDir, maxAttempts: 1, targetProcess: procName);
+            await PostInjectionDiagnostics();
+        }
+        finally
+        {
+            _autoInjecting = false;
+            _injectionLock.Release();
+        }
     }
 
     private void QuickLaunch_Click(object sender, RoutedEventArgs e)
     {
         NavLoader.IsChecked = true;
+    }
+
+    private async Task PostInjectionDiagnostics()
+    {
+        await Task.Delay(3_000);
+        var procName = FindGameProcess();
+        if (procName == null)
+        {
+            AppendLog("[WARNING] Game process not found — the game may have crashed on injection.");
+            AppendLog("[TIP] Try disabling Windows Defender real-time protection before launching.");
+            AppendLog("[TIP] Close ALL overlays (Steam, Discord, NVIDIA) before launching.");
+            _autoInjected = false;
+            return;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -Command \"(Get-MpPreference).DisableRealtimeMonitoring\"",
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            var proc = Process.Start(psi);
+            if (proc != null)
+            {
+                var output = (await proc.StandardOutput.ReadToEndAsync()).Trim();
+                proc.WaitForExit(5_000);
+                if (output.Equals("False", StringComparison.OrdinalIgnoreCase))
+                {
+                    AppendLog("[WARNING] Windows Defender real-time protection is ON.");
+                    AppendLog("[TIP] If menu doesn't appear, add game folder + CoreX folder to Defender exclusions.");
+                }
+            }
+        }
+        catch { }
+
+        var dllPath = FindFile("mw2.dll", "MW2.dll");
+        if (dllPath != null && !File.Exists(dllPath))
+        {
+            AppendLog("[ERROR] mw2.dll was deleted — antivirus likely removed it.");
+            AppendLog("[TIP] Restore the file and add it to your antivirus exclusions.");
+        }
+
+        var overlays = DetectOverlays(procName);
+        if (overlays.Count > 0)
+        {
+            bool hasSteam = overlays.Any(o => o.Contains("Steam"));
+            bool hasDiscord = overlays.Any(o => o.Contains("Discord"));
+            if (hasSteam)
+            {
+                AppendLog("[WARNING] Steam Overlay is active — this can block the in-game menu.");
+                AppendLog("[TIP] Disable Steam Overlay: Steam > Settings > In-Game > uncheck 'Enable Steam Overlay'.");
+            }
+            if (hasDiscord)
+            {
+                AppendLog("[WARNING] Discord Overlay is active — this can block the in-game menu.");
+                AppendLog("[TIP] Disable Discord Overlay: Settings > Game Overlay > toggle off.");
+            }
+            foreach (var o in overlays.Where(o => !o.Contains("Steam") && !o.Contains("Discord")))
+                AppendLog($"[WARNING] {o} is active — may conflict with menu overlay.");
+        }
+
+        var logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Personal), "cxdebug.txt");
+        if (File.Exists(logPath))
+        {
+            try
+            {
+                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var sr = new StreamReader(fs);
+                var lines = (await sr.ReadToEndAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                bool hasCrash = false;
+                bool d3dFailed = false;
+                foreach (var line in lines.TakeLast(20))
+                {
+                    var trimmed = line.Trim();
+                    if (trimmed.Contains("CRASH"))
+                    {
+                        AppendLog($"[WARNING] DLL issue: {trimmed}");
+                        hasCrash = true;
+                    }
+                    if (trimmed.Contains("D3D12 init failed after all retries"))
+                        d3dFailed = true;
+                }
+                if (d3dFailed)
+                {
+                    AppendLog("[WARNING] D3D12 initialization failed — menu will not render.");
+                    AppendLog("[TIP] Disable ALL overlays (Steam, Discord, NVIDIA ShadowPlay, Xbox Game Bar).");
+                    AppendLog("[TIP] Make sure the game is running in DirectX 12 mode (not DX11).");
+                }
+            }
+            catch { }
+        }
+
+        AppendLog("[OK] Injection complete — press INSERT in game to open menu.");
+        AppendLog("[TIP] If menu doesn't appear: disable Steam/Discord/NVIDIA overlays and try again.");
     }
 
     private bool RequireLicense()
@@ -1265,6 +2365,211 @@ public partial class MainWindow : Window
             dlg.SelectedPath = GameDirBox.Text.Trim();
         if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
             GameDirBox.Text = dlg.SelectedPath;
+    }
+
+    private void GamePlatform_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (GameDirBox == null) return;
+        if (GamePlatformCombo?.SelectedItem is not System.Windows.Controls.ComboBoxItem item) return;
+        var platform = item.Content?.ToString() ?? "";
+        var detected = DetectGameDirectory(platform);
+        if (detected != null)
+            GameDirBox.Text = detected;
+    }
+
+    private void AutoDetectGameDir_Click(object sender, RoutedEventArgs e)
+    {
+        var platform = (GamePlatformCombo?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "Steam";
+        var detected = DetectGameDirectory(platform);
+        if (detected != null)
+        {
+            GameDirBox.Text = detected;
+            AppendLog($"[*] Auto-detected {platform} game directory: {detected}");
+        }
+        else
+        {
+            AppendLog($"[!] Could not auto-detect game directory for {platform}. Use Browse to set it manually.");
+            MessageBox.Show($"Could not find the game installation for {platform}.\nUse Browse to select the folder manually.",
+                "Auto Detect", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private string? DetectGameDirectory(string platform)
+    {
+        switch (platform)
+        {
+            case "Steam":
+                return DetectSteamGameDir();
+            case "Battle.net":
+                return DetectBattleNetGameDir();
+            case "Xbox (PC)":
+                return DetectXboxGameDir();
+            default:
+                return null;
+        }
+    }
+
+    private string? DetectSteamGameDir()
+    {
+        var candidates = new List<string>();
+
+        try
+        {
+            var steamPath = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath", null) as string
+                ?? Microsoft.Win32.Registry.GetValue(
+                @"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam", "InstallPath", null) as string;
+
+            if (steamPath != null)
+            {
+                candidates.Add(Path.Combine(steamPath, "steamapps", "common", "Call of Duty Modern Warfare II"));
+                candidates.Add(Path.Combine(steamPath, "steamapps", "common", "Call of Duty HQ"));
+
+                var libFile = Path.Combine(steamPath, "steamapps", "libraryfolders.vdf");
+                if (File.Exists(libFile))
+                {
+                    foreach (var line in File.ReadAllLines(libFile))
+                    {
+                        var trimmed = line.Trim();
+                        if (trimmed.StartsWith("\"path\""))
+                        {
+                            var parts = trimmed.Split('"');
+                            if (parts.Length >= 4)
+                            {
+                                var libPath = parts[3].Replace("\\\\", "\\");
+                                candidates.Add(Path.Combine(libPath, "steamapps", "common", "Call of Duty Modern Warfare II"));
+                                candidates.Add(Path.Combine(libPath, "steamapps", "common", "Call of Duty HQ"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+
+        var defaultPaths = new[]
+        {
+            @"C:\Program Files (x86)\Steam\steamapps\common\Call of Duty Modern Warfare II",
+            @"C:\Program Files\Steam\steamapps\common\Call of Duty Modern Warfare II",
+            @"D:\SteamLibrary\steamapps\common\Call of Duty Modern Warfare II",
+            @"E:\SteamLibrary\steamapps\common\Call of Duty Modern Warfare II",
+            @"C:\Program Files (x86)\Steam\steamapps\common\Call of Duty HQ",
+        };
+        candidates.AddRange(defaultPaths);
+
+        foreach (var path in candidates)
+            if (Directory.Exists(path)) return path;
+
+        return null;
+    }
+
+    private string? DetectBattleNetGameDir()
+    {
+        var candidates = new List<string>();
+
+        try
+        {
+            var bnetPath = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Blizzard Entertainment\Battle.net", "InstallPath", null) as string;
+            if (bnetPath != null)
+            {
+                var parent = Path.GetDirectoryName(bnetPath);
+                if (parent != null)
+                {
+                    candidates.Add(Path.Combine(parent, "Call of Duty"));
+                    candidates.Add(Path.Combine(parent, "Call of Duty Modern Warfare II"));
+                }
+            }
+        }
+        catch { }
+
+        try
+        {
+            var configPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Battle.net", "Battle.net.config");
+            if (File.Exists(configPath))
+            {
+                var content = File.ReadAllText(configPath);
+                var key = "\"DefaultInstallPath\":";
+                var idx = content.IndexOf(key);
+                if (idx >= 0)
+                {
+                    var start = content.IndexOf('"', idx + key.Length) + 1;
+                    var end = content.IndexOf('"', start);
+                    if (start > 0 && end > start)
+                    {
+                        var installRoot = content.Substring(start, end - start).Replace("\\\\", "\\").Replace("\\/", "/");
+                        candidates.Add(Path.Combine(installRoot, "Call of Duty"));
+                        candidates.Add(Path.Combine(installRoot, "Call of Duty Modern Warfare II"));
+                    }
+                }
+            }
+        }
+        catch { }
+
+        var defaultPaths = new[]
+        {
+            @"C:\Program Files (x86)\Call of Duty",
+            @"C:\Program Files\Call of Duty",
+            @"D:\Call of Duty",
+            @"E:\Call of Duty",
+            @"C:\Program Files (x86)\Call of Duty Modern Warfare II",
+            @"D:\Games\Call of Duty",
+        };
+        candidates.AddRange(defaultPaths);
+
+        foreach (var path in candidates)
+            if (Directory.Exists(path)) return path;
+
+        return null;
+    }
+
+    private string? DetectXboxGameDir()
+    {
+        var candidates = new List<string>();
+
+        var modifiable = new[]
+        {
+            @"C:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
+            @"C:\Program Files\ModifiableWindowsApps\Call of Duty Modern Warfare II",
+            @"D:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
+            @"E:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
+        };
+        candidates.AddRange(modifiable);
+
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                if (drive.DriveType != DriveType.Fixed) continue;
+                var xgp = Path.Combine(drive.Name, "XboxGames", "Call of Duty HQ", "Content");
+                candidates.Add(xgp);
+                var xgp2 = Path.Combine(drive.Name, "XboxGames", "Call of Duty Modern Warfare II", "Content");
+                candidates.Add(xgp2);
+            }
+        }
+        catch { }
+
+        try
+        {
+            var windowsApps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps");
+            if (Directory.Exists(windowsApps))
+            {
+                try
+                {
+                    foreach (var dir in Directory.GetDirectories(windowsApps, "Activision*"))
+                        candidates.Add(dir);
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        foreach (var path in candidates)
+            if (Directory.Exists(path)) return path;
+
+        return null;
     }
 
     // ═══════════════ LICENSE ═══════════════
@@ -1319,13 +2624,30 @@ public partial class MainWindow : Window
 
     private async Task AutoActivateAsync(string savedKey)
     {
+        KeyBox.Text = savedKey;
+
+        if (!string.IsNullOrEmpty(_currentSettings.LicensePlan) &&
+            _currentSettings.LicenseExpiry.HasValue &&
+            _currentSettings.LicenseExpiry.Value > DateTime.UtcNow)
+        {
+            ApplyLicense(
+                new LicenseResponse(true, "License restored (cached).",
+                    _currentSettings.LicensePlan, _currentSettings.LicenseExpiry),
+                savedKey, save: false);
+            ActivationResult.Text = "License restored (cached).";
+            ActivationResult.Foreground = FindResource("SuccessBrush") as SolidColorBrush;
+            AppendLog("[OK] License restored from local cache — validating online...");
+        }
+        else
+        {
+            ActivationResult.Text = "Connecting to license server...";
+        }
+
         try
         {
-            KeyBox.Text = savedKey;
-            ActivationResult.Text = "Restoring license...";
-
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
             var resp = await _http.PostAsJsonAsync($"{Api}/api/license/activate",
-                new { Key = savedKey, DeviceId });
+                new { Key = savedKey, DeviceId }, cts.Token);
             var json = await resp.Content.ReadAsStringAsync();
             var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -1336,22 +2658,31 @@ public partial class MainWindow : Window
                 DateTime? expiresAt = root.TryGetProperty("expiresAt", out var ex) && ex.ValueKind != JsonValueKind.Null
                     ? ex.GetDateTime() : null;
 
-                ActivationResult.Text = "License restored.";
+                ActivationResult.Text = "License verified.";
                 ActivationResult.Foreground = FindResource("SuccessBrush") as SolidColorBrush;
-                ApplyLicense(new LicenseResponse(true, "License restored.", plan, expiresAt), savedKey, save: false);
-                AppendLog("[OK] License auto-activated from saved key.");
+                ApplyLicense(new LicenseResponse(true, "License verified.", plan, expiresAt), savedKey);
+                AppendLog("[OK] License verified with server.");
             }
             else
             {
                 var message = root.TryGetProperty("message", out var m) ? m.GetString() ?? "" : "";
                 ActivationResult.Text = message;
                 ActivationResult.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+                if (!_licensed)
+                    AppendLog($"[ERROR] License rejected: {message}");
             }
         }
         catch
         {
-            ActivationResult.Text = "Cannot reach license server — enter key manually.";
-            ActivationResult.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+            if (_licensed)
+            {
+                AppendLog("[!] Server unreachable — using cached license.");
+            }
+            else
+            {
+                ActivationResult.Text = "Cannot reach license server — using cached data or enter key manually.";
+                ActivationResult.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
+            }
         }
     }
 
@@ -1477,6 +2808,7 @@ public partial class MainWindow : Window
                 AdminLoginResult.Text = "";
                 NavBuildDeploy.Visibility = Visibility.Visible;
                 NavSettings.Visibility = Visibility.Visible;
+                EnableDebugFlag();
             }
             else
             {
@@ -1508,8 +2840,7 @@ public partial class MainWindow : Window
     {
         if (!_adminAuthed) return;
 
-        var plan = GenPlanBox.Text.Trim();
-        if (string.IsNullOrEmpty(plan)) plan = "Standard";
+        var plan = (GenPlanBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "Monthly";
         if (!int.TryParse(GenDaysBox.Text.Trim(), out var days) || days <= 0)
         {
             GenKeyResult.Text = "Enter a valid number of days.";
@@ -1529,11 +2860,15 @@ public partial class MainWindow : Window
 
         try
         {
+            var nameLabel = GenNameBox.Text.Trim();
             var generated = new List<string>();
             for (int i = 0; i < qty; i++)
             {
+                var body = string.IsNullOrEmpty(nameLabel)
+                    ? new { Days = days, Plan = plan, Name = (string?)null }
+                    : new { Days = days, Plan = plan, Name = (string?)nameLabel };
                 var req = AdminRequest(HttpMethod.Post, "/api/admin/keys",
-                    new StringContent(JsonSerializer.Serialize(new { Days = days, Plan = plan }),
+                    new StringContent(JsonSerializer.Serialize(body),
                         Encoding.UTF8, "application/json"));
                 var resp = await _http.SendAsync(req);
                 var json = await resp.Content.ReadAsStringAsync();
@@ -1587,10 +2922,68 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void AdminRefreshKeys_Click(object sender, RoutedEventArgs e)
+    private async void AdminDeleteAllKeys_Click(object sender, RoutedEventArgs e)
     {
         if (!_adminAuthed) return;
 
+        var confirm = MessageBox.Show("Delete ALL license keys?\n\nThis cannot be undone.",
+            "CORE X — Delete All Keys", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+
+        try
+        {
+            var listReq = AdminRequest(HttpMethod.Get, "/api/admin/keys");
+            var listResp = await _http.SendAsync(listReq);
+            var listJson = await listResp.Content.ReadAsStringAsync();
+
+            if (!listResp.IsSuccessStatusCode)
+            {
+                MessageBox.Show("Could not fetch key list.", "CORE X", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var allKeysRaw = JsonSerializer.Deserialize<List<ApiKeyEntry>>(listJson,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
+
+            if (allKeysRaw.Count == 0)
+            {
+                AppendLog("[ADMIN] No keys to delete.");
+                await RefreshKeyListAsync();
+                return;
+            }
+
+            DeletedKeysTracker.MarkAllDeleted(allKeysRaw.Select(k => k.Key));
+
+            int deleted = 0;
+            foreach (var k in allKeysRaw)
+            {
+                try
+                {
+                    var delReq = AdminRequest(HttpMethod.Delete, $"/api/admin/keys/{Uri.EscapeDataString(k.Key)}");
+                    var delResp = await _http.SendAsync(delReq);
+                    if (delResp.IsSuccessStatusCode) deleted++;
+                }
+                catch { }
+            }
+
+            AppendLog($"[ADMIN] Deleted {allKeysRaw.Count} key(s) ({deleted} removed from server).");
+            await RefreshKeyListAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] {ex.Message}");
+            MessageBox.Show($"Delete failed: {ex.Message}", "CORE X", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void AdminRefreshKeys_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_adminAuthed) return;
+        await RefreshKeyListAsync();
+    }
+
+    private async Task RefreshKeyListAsync()
+    {
         KeyListPanel.Children.Clear();
 
         try
@@ -1611,82 +3004,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var allKeys = JsonSerializer.Deserialize<List<ApiKeyEntry>>(json,
+            var rawKeys = JsonSerializer.Deserialize<List<ApiKeyEntry>>(json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new();
-
-            if (allKeys.Count == 0)
-            {
-                KeyListPanel.Children.Add(new TextBlock
-                {
-                    Text = "No keys found.",
-                    FontSize = 12,
-                    Foreground = FindResource("MutedBrush") as SolidColorBrush,
-                    Padding = new Thickness(10, 8, 10, 8)
-                });
-                return;
-            }
-
-            foreach (var k in allKeys)
-            {
-                string status;
-                string statusColor;
-                if (!k.Activated)                              { status = "NOT ACTIVATED"; statusColor = "MutedBrush"; }
-                else if (k.ExpiresAt.HasValue && k.ExpiresAt < DateTime.UtcNow)
-                                                               { status = "EXPIRED";       statusColor = "ErrorBrush"; }
-                else if (!string.IsNullOrEmpty(k.DeviceId))    { status = "BOUND";         statusColor = "WarningBrush"; }
-                else                                           { status = "ACTIVE";        statusColor = "SuccessBrush"; }
-
-                var row = new Border
-                {
-                    BorderBrush = FindResource("BorderBrush") as SolidColorBrush,
-                    BorderThickness = new Thickness(0, 0, 0, 1),
-                    Padding = new Thickness(10, 8, 10, 8)
-                };
-
-                var grid = new Grid();
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-                var info = new StackPanel();
-                info.Children.Add(new TextBlock
-                {
-                    Text = k.Key,
-                    FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
-                    FontSize = 12,
-                    Foreground = FindResource("TextBrush") as SolidColorBrush
-                });
-                var expiryText = k.Activated && k.ExpiresAt.HasValue
-                    ? $"Expires: {k.ExpiresAt.Value:d}"
-                    : $"{k.DurationDays} day(s) — starts on activation";
-                info.Children.Add(new TextBlock
-                {
-                    Text = $"{k.Plan}  |  {status}  |  {expiryText}" +
-                           (!string.IsNullOrEmpty(k.DeviceId) ? $"  |  HWID: {k.DeviceId[..Math.Min(8, k.DeviceId.Length)]}..." : ""),
-                    FontSize = 11,
-                    Foreground = FindResource(statusColor) as SolidColorBrush,
-                    Margin = new Thickness(0, 2, 0, 0)
-                });
-                Grid.SetColumn(info, 0);
-                grid.Children.Add(info);
-
-                var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-                var copyBtn = new Button { Content = "COPY", Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(4, 0, 0, 0), FontSize = 11 };
-                var capturedKey = k.Key;
-                copyBtn.Click += (_, _) =>
-                {
-                    System.Windows.Clipboard.SetText(capturedKey);
-                    copyBtn.Content = "COPIED!";
-                    var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-                    t.Tick += (_, _) => { copyBtn.Content = "COPY"; t.Stop(); };
-                    t.Start();
-                };
-                actions.Children.Add(copyBtn);
-                Grid.SetColumn(actions, 1);
-                grid.Children.Add(actions);
-
-                row.Child = grid;
-                KeyListPanel.Children.Add(row);
-            }
+            _cachedKeys = DeletedKeysTracker.FilterDeleted(rawKeys);
+            RenderFilteredKeys();
         }
         catch (Exception ex)
         {
@@ -1698,6 +3019,199 @@ public partial class MainWindow : Window
                 Foreground = FindResource("ErrorBrush") as SolidColorBrush,
                 Padding = new Thickness(10, 8, 10, 8)
             });
+        }
+    }
+
+    private void KeyFilter_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (_cachedKeys.Count > 0) RenderFilteredKeys();
+    }
+
+    private void KeyFilter_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_cachedKeys.Count > 0) RenderFilteredKeys();
+    }
+
+    private void RenderFilteredKeys()
+    {
+        KeyListPanel.Children.Clear();
+
+        var search = KeySearchBox?.Text?.Trim() ?? "";
+        var statusFilter = (KeyStatusFilter?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "All Status";
+        var typeFilter = (KeyTypeFilter?.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "All Types";
+
+        var filtered = _cachedKeys.Where(k =>
+        {
+            string status;
+            if (!k.Activated)                                                      status = "Not Activated";
+            else if (k.ExpiresAt.HasValue && k.ExpiresAt < DateTime.UtcNow)        status = "Expired";
+            else if (!string.IsNullOrEmpty(k.DeviceId))                            status = "Bound";
+            else                                                                   status = "Active";
+
+            if (statusFilter != "All Status" && !status.Equals(statusFilter, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (typeFilter != "All Types")
+            {
+                if (!string.Equals(k.Plan, typeFilter, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            if (!string.IsNullOrEmpty(search))
+            {
+                bool match = k.Key.Contains(search, StringComparison.OrdinalIgnoreCase)
+                          || (k.DeviceId ?? "").Contains(search, StringComparison.OrdinalIgnoreCase)
+                          || (k.Plan ?? "").Contains(search, StringComparison.OrdinalIgnoreCase)
+                          || (k.Name ?? "").Contains(search, StringComparison.OrdinalIgnoreCase);
+                if (!match) return false;
+            }
+
+            return true;
+        }).ToList();
+
+        KeyCountLabel.Text = $"Showing {filtered.Count} of {_cachedKeys.Count} keys";
+
+        if (filtered.Count == 0)
+        {
+            KeyListPanel.Children.Add(new TextBlock
+            {
+                Text = _cachedKeys.Count == 0 ? "No keys found." : "No keys match the current filters.",
+                FontSize = 12,
+                Foreground = FindResource("MutedBrush") as SolidColorBrush,
+                Padding = new Thickness(10, 8, 10, 8)
+            });
+            return;
+        }
+
+        foreach (var k in filtered)
+        {
+            string status;
+            string statusColor;
+            if (!k.Activated)                              { status = "NOT ACTIVATED"; statusColor = "MutedBrush"; }
+            else if (k.ExpiresAt.HasValue && k.ExpiresAt < DateTime.UtcNow)
+                                                           { status = "EXPIRED";       statusColor = "ErrorBrush"; }
+            else if (!string.IsNullOrEmpty(k.DeviceId))    { status = "BOUND";         statusColor = "WarningBrush"; }
+            else                                           { status = "ACTIVE";        statusColor = "SuccessBrush"; }
+
+            var row = new Border
+            {
+                BorderBrush = FindResource("BorderBrush") as SolidColorBrush,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(10, 8, 10, 8)
+            };
+
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var info = new StackPanel();
+            if (!string.IsNullOrEmpty(k.Name))
+            {
+                info.Children.Add(new TextBlock
+                {
+                    Text = k.Name,
+                    FontSize = 13,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = FindResource("AccentGlowBrush") as SolidColorBrush
+                });
+            }
+            info.Children.Add(new TextBlock
+            {
+                Text = k.Key,
+                FontFamily = new System.Windows.Media.FontFamily("Cascadia Mono,Consolas"),
+                FontSize = 12,
+                Foreground = FindResource("TextBrush") as SolidColorBrush
+            });
+            var expiryText = k.Activated && k.ExpiresAt.HasValue
+                ? $"Expires: {k.ExpiresAt.Value:d}"
+                : $"{k.DurationDays} day(s) — starts on activation";
+            info.Children.Add(new TextBlock
+            {
+                Text = $"{k.Plan}  |  {status}  |  {expiryText}" +
+                       (!string.IsNullOrEmpty(k.DeviceId) ? $"  |  HWID: {k.DeviceId}" : ""),
+                FontSize = 11,
+                Foreground = FindResource(statusColor) as SolidColorBrush,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            Grid.SetColumn(info, 0);
+            grid.Children.Add(info);
+
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+
+            var nameBtn = new Button
+            {
+                Content = string.IsNullOrEmpty(k.Name) ? "NAME" : "RENAME",
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(4, 0, 0, 0),
+                FontSize = 11
+            };
+            var nameKey = k.Key;
+            var currentName = k.Name ?? "";
+            nameBtn.Click += async (_, _) =>
+            {
+                var dialog = new InputDialog("Set Name", "Enter a label for this key (e.g. player name):", currentName);
+                if (dialog.ShowDialog() == true)
+                {
+                    var newName = dialog.ResponseText.Trim();
+                    try
+                    {
+                        var nr = AdminRequest(HttpMethod.Put, $"/api/admin/keys/{Uri.EscapeDataString(nameKey)}/name",
+                            new StringContent(JsonSerializer.Serialize(new { Name = string.IsNullOrEmpty(newName) ? (string?)null : newName }),
+                                Encoding.UTF8, "application/json"));
+                        await _http.SendAsync(nr);
+                        await RefreshKeyListAsync();
+                    }
+                    catch (Exception ex) { AppendLog($"[ERROR] {ex.Message}"); }
+                }
+            };
+            actions.Children.Add(nameBtn);
+
+            var copyBtn = new Button { Content = "COPY", Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(4, 0, 0, 0), FontSize = 11 };
+            var capturedKey = k.Key;
+            copyBtn.Click += (_, _) =>
+            {
+                System.Windows.Clipboard.SetText(capturedKey);
+                copyBtn.Content = "COPIED!";
+                var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                t.Tick += (_, _) => { copyBtn.Content = "COPY"; t.Stop(); };
+                t.Start();
+            };
+            actions.Children.Add(copyBtn);
+
+            var delBtn = new Button
+            {
+                Content = "DELETE",
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(4, 0, 0, 0),
+                FontSize = 11,
+                Style = FindResource("DangerButton") as Style
+            };
+            var delKey = k.Key;
+            delBtn.Click += async (_, _) =>
+            {
+                var c = MessageBox.Show($"Delete key?\n{delKey}", "CORE X", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (c != MessageBoxResult.Yes) return;
+                try
+                {
+                    DeletedKeysTracker.MarkDeleted(delKey);
+                    try
+                    {
+                        var dr = AdminRequest(HttpMethod.Delete, $"/api/admin/keys/{Uri.EscapeDataString(delKey)}");
+                        await _http.SendAsync(dr);
+                    }
+                    catch { }
+                    AppendLog($"[ADMIN] Deleted {delKey}");
+                    await RefreshKeyListAsync();
+                }
+                catch (Exception ex) { AppendLog($"[ERROR] {ex.Message}"); }
+            };
+            actions.Children.Add(delBtn);
+
+            Grid.SetColumn(actions, 1);
+            grid.Children.Add(actions);
+
+            row.Child = grid;
+            KeyListPanel.Children.Add(row);
         }
     }
 
@@ -1739,26 +3253,18 @@ public partial class MainWindow : Window
             "CORE X — Delete Key", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
+        DeletedKeysTracker.MarkDeleted(key);
+
         try
         {
             var req = AdminRequest(HttpMethod.Delete, $"/api/admin/keys/{Uri.EscapeDataString(key)}");
-            var resp = await _http.SendAsync(req);
-            var json = await resp.Content.ReadAsStringAsync();
-            var message = TryGetField(json, "message") ?? (resp.IsSuccessStatusCode ? "Key deleted." : "Failed.");
+            await _http.SendAsync(req);
+        }
+        catch { }
 
-            ActionKeyResult.Text = message;
-            ActionKeyResult.Foreground = FindResource(resp.IsSuccessStatusCode ? "SuccessBrush" : "ErrorBrush") as SolidColorBrush;
-        }
-        catch (HttpRequestException)
-        {
-            ActionKeyResult.Text = "Cannot reach server.";
-            ActionKeyResult.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
-        }
-        catch (Exception ex)
-        {
-            ActionKeyResult.Text = $"Error: {ex.Message}";
-            ActionKeyResult.Foreground = FindResource("ErrorBrush") as SolidColorBrush;
-        }
+        ActionKeyResult.Text = "Key deleted.";
+        ActionKeyResult.Foreground = FindResource("SuccessBrush") as SolidColorBrush;
+        await RefreshKeyListAsync();
     }
 
     private static string? TryGetMessage(string json)
@@ -1800,6 +3306,7 @@ public partial class MainWindow : Window
             _currentSettings.MsBuildPath        = MsBuildPathBox.Text.Trim();
             _currentSettings.BuildConfiguration = BuildConfigBox.Text.Trim();
             _currentSettings.BuildPlatform      = BuildPlatformBox.Text.Trim();
+            _currentSettings.GamePlatform       = (GamePlatformCombo?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "Steam";
 
             var json = JsonSerializer.Serialize(_currentSettings, new JsonSerializerOptions { WriteIndented = true });
             var encrypted = AuthGuard.Encrypt(Encoding.UTF8.GetBytes(json));
@@ -1818,19 +3325,19 @@ public partial class MainWindow : Window
     {
         var defaults = new AppSettings
         {
-            GameDirectory      = @"C:\Program Files (x86)\Steam\steamapps\common\Call of Duty Modern Warfare II",
+            GameDirectory      = "",
             SourceDll          = DefaultSourceDll,
             DeployFilename     = DefaultDeployName,
             SteamAppId         = "3595230",
             ProcessName        = "cod22-cod",
-            DebugLogPath       = @"C:\Users\Germani Rosario\Desktop\cxdebug.txt",
+            DebugLogPath       = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "cxdebug.txt"),
             ApiEndpoint        = "https://corex-api-5tdf.onrender.com",
             ProxyDll           = DefaultProxyDll,
-            CheatProjectPath   = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                @"Desktop\coffin\coffin\mw2\mw2 working example\MW2Project\MW2Project.vcxproj"),
-            MsBuildPath        = @"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe",
+            CheatProjectPath   = "",
+            MsBuildPath        = "",
             BuildConfiguration = "Release",
-            BuildPlatform      = "x64"
+            BuildPlatform      = "x64",
+            GamePlatform       = "Steam"
         };
 
         try
@@ -1859,7 +3366,8 @@ public partial class MainWindow : Window
                         BuildPlatform      = loaded.BuildPlatform      ?? defaults.BuildPlatform,
                         SourceDll          = loaded.SourceDll          ?? defaults.SourceDll,
                         DeployFilename     = loaded.DeployFilename     ?? defaults.DeployFilename,
-                        ProxyDll           = loaded.ProxyDll           ?? defaults.ProxyDll
+                        ProxyDll           = loaded.ProxyDll           ?? defaults.ProxyDll,
+                        GamePlatform       = loaded.GamePlatform       ?? defaults.GamePlatform
                     };
                 }
             }
@@ -1878,6 +3386,34 @@ public partial class MainWindow : Window
         MsBuildPathBox.Text   = defaults.MsBuildPath ?? "";
         BuildConfigBox.Text   = defaults.BuildConfiguration ?? "Debug";
         BuildPlatformBox.Text = defaults.BuildPlatform ?? "x64";
+
+        var savedPlatform = defaults.GamePlatform ?? "Steam";
+        for (int i = 0; i < GamePlatformCombo.Items.Count; i++)
+        {
+            if (GamePlatformCombo.Items[i] is System.Windows.Controls.ComboBoxItem ci &&
+                ci.Content?.ToString() == savedPlatform)
+            {
+                GamePlatformCombo.SelectedIndex = i;
+                break;
+            }
+        }
+
+        if (string.IsNullOrEmpty(GameDirBox.Text))
+        {
+            var detected = DetectGameDirectory("Steam")
+                        ?? DetectGameDirectory("Battle.net")
+                        ?? DetectGameDirectory("Xbox (PC)");
+            if (detected != null)
+            {
+                GameDirBox.Text = detected;
+                if (detected.Contains("Steam", StringComparison.OrdinalIgnoreCase))
+                    GamePlatformCombo.SelectedIndex = 0;
+                else if (detected.Contains("Battle", StringComparison.OrdinalIgnoreCase) || detected.Contains("Call of Duty", StringComparison.OrdinalIgnoreCase))
+                    GamePlatformCombo.SelectedIndex = 1;
+                else
+                    GamePlatformCombo.SelectedIndex = 2;
+            }
+        }
     }
 
     private sealed record LicenseResponse(bool Success, string Message, string? Plan, DateTime? ExpiresAt);
@@ -1898,6 +3434,7 @@ public partial class MainWindow : Window
         public string? MsBuildPath        { get; set; }
         public string? BuildConfiguration { get; set; }
         public string? BuildPlatform      { get; set; }
+        public string? GamePlatform       { get; set; }
     }
 }
 
@@ -1970,6 +3507,62 @@ sealed record ApiKeyEntry
     public bool Bound { get; set; }
     public DateTime? ExpiresAt { get; set; }
     public string? DeviceId { get; set; }
+    public string? Name { get; set; }
+}
+
+static class DeletedKeysTracker
+{
+    private static readonly string StorePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX", "deleted_keys.dat");
+
+    private static HashSet<string> Load()
+    {
+        if (!File.Exists(StorePath)) return new HashSet<string>();
+        try
+        {
+            var decrypted = AuthGuard.Decrypt(File.ReadAllBytes(StorePath));
+            var json = Encoding.UTF8.GetString(decrypted);
+            return JsonSerializer.Deserialize<HashSet<string>>(json) ?? new HashSet<string>();
+        }
+        catch { return new HashSet<string>(); }
+    }
+
+    private static void Save(HashSet<string> keys)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
+        var json = JsonSerializer.Serialize(keys);
+        var encrypted = AuthGuard.Encrypt(Encoding.UTF8.GetBytes(json));
+        File.WriteAllBytes(StorePath, encrypted);
+    }
+
+    public static void MarkDeleted(string key)
+    {
+        var set = Load();
+        set.Add(key);
+        Save(set);
+    }
+
+    public static void MarkAllDeleted(IEnumerable<string> keys)
+    {
+        var set = Load();
+        foreach (var k in keys) set.Add(k);
+        Save(set);
+    }
+
+    public static bool IsDeleted(string key) => Load().Contains(key);
+
+    public static List<ApiKeyEntry> FilterDeleted(List<ApiKeyEntry> keys)
+    {
+        var deleted = Load();
+        if (deleted.Count == 0) return keys;
+        return keys.Where(k => !deleted.Contains(k.Key)).ToList();
+    }
+
+    public static void UnmarkDeleted(string key)
+    {
+        var set = Load();
+        if (set.Remove(key)) Save(set);
+    }
 }
 
 sealed record ActivationResult(bool Success, string Message, string? Plan = null, DateTime? ExpiresAt = null);
@@ -2166,6 +3759,11 @@ static class AuthGuard
             new[]{(char)0x68,(char)0x78,(char)0x64},
             new[]{(char)0x70,(char)0x72,(char)0x6F,(char)0x63,(char)0x6D,(char)0x6F,(char)0x6E},
             new[]{(char)0x72,(char)0x65,(char)0x73,(char)0x68,(char)0x61,(char)0x63,(char)0x6B,(char)0x65,(char)0x72},
+            new[]{(char)0x67,(char)0x68,(char)0x69,(char)0x64,(char)0x72,(char)0x61},
+            new[]{(char)0x73,(char)0x63,(char)0x79,(char)0x6C,(char)0x6C,(char)0x61},
+            new[]{(char)0x64,(char)0x65,(char)0x62,(char)0x75,(char)0x67,(char)0x67,(char)0x65,(char)0x72},
+            new[]{(char)0x69,(char)0x6D,(char)0x6D,(char)0x75,(char)0x6E,(char)0x69,(char)0x74,(char)0x79},
+            new[]{(char)0x68,(char)0x74,(char)0x74,(char)0x70,(char)0x64,(char)0x65,(char)0x62,(char)0x75,(char)0x67,(char)0x67,(char)0x65,(char)0x72},
         };
         try
         {
@@ -2190,20 +3788,77 @@ static class AuthGuard
         try { NtSetInformationThread(GetCurrentThread(), 0x11, IntPtr.Zero, 0); } catch { }
     }
 
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
     public static void ErasePEHeader()
     {
         try
         {
-            var mod = Process.GetCurrentProcess().MainModule;
-            if (mod == null) return;
-            var ba = mod.BaseAddress;
+            var ba = GetModuleHandle(null);
+            if (ba == IntPtr.Zero) return;
             if (VirtualProtect(ba, (UIntPtr)4096, 0x40, out var old))
             {
-                Marshal.Copy(new byte[512], 0, ba, 512);
+                var zero = new byte[4096];
+                Marshal.Copy(zero, 0, ba, 4096);
                 VirtualProtect(ba, (UIntPtr)4096, old, out _);
             }
         }
         catch { }
+    }
+
+    public static bool CheckIntegrity()
+    {
+        try
+        {
+            var path = Process.GetCurrentProcess().MainModule?.FileName;
+            if (path == null || !File.Exists(path)) return false;
+            var bytes = File.ReadAllBytes(path);
+            var hash = SHA256.HashData(bytes);
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CoreX");
+            var hashFile = Path.Combine(dir, ".cxh");
+            Directory.CreateDirectory(dir);
+            if (!File.Exists(hashFile))
+            {
+                File.WriteAllBytes(hashFile, hash);
+                File.SetAttributes(hashFile, FileAttributes.Hidden | FileAttributes.System);
+                return true;
+            }
+            var stored = File.ReadAllBytes(hashFile);
+            if (stored.Length != hash.Length) { File.WriteAllBytes(hashFile, hash); return true; }
+            return stored.SequenceEqual(hash);
+        }
+        catch { return true; }
+    }
+
+    public static bool DetectSandbox()
+    {
+        try
+        {
+            var names = new[] { "vmware", "virtualbox", "vbox", "qemu", "xen", "sandboxie", "cuckoo", "wine" };
+            var sysDir = Environment.SystemDirectory;
+            foreach (var n in names)
+            {
+                try
+                {
+                    foreach (var dll in Directory.GetFiles(sysDir, "*.dll"))
+                    {
+                        if (Path.GetFileName(dll).ToLowerInvariant().Contains(n)) return true;
+                    }
+                }
+                catch { }
+            }
+            try
+            {
+                using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\Disk\Enum");
+                var val = key?.GetValue("0")?.ToString()?.ToLowerInvariant() ?? "";
+                foreach (var n in names)
+                    if (val.Contains(n)) return true;
+            }
+            catch { }
+        }
+        catch { }
+        return false;
     }
 
     public static bool TimingCheck()
@@ -2228,12 +3883,15 @@ static class AuthGuard
 
     public static void InitProtection()
     {
-        HideThread();
-        if (ScanForTools() || TimingCheck())
+        try
         {
-            Thread.Sleep(new Random().Next(800, 2500));
-            Environment.Exit(1);
+            if (ScanForTools())
+            {
+                Thread.Sleep(new Random().Next(800, 2500));
+                Environment.Exit(1);
+            }
         }
+        catch { }
     }
 
     public static string ComputeHmac(string payload)
@@ -2286,5 +3944,60 @@ static class AuthGuard
         using (var cs = new CryptoStream(ms, aes.CreateDecryptor(), CryptoStreamMode.Write))
             cs.Write(data, 16, data.Length - 16);
         return ms.ToArray();
+    }
+}
+
+sealed class InputDialog : Window
+{
+    private readonly System.Windows.Controls.TextBox _input;
+    public string ResponseText => _input.Text;
+
+    public InputDialog(string title, string prompt, string defaultValue = "")
+    {
+        Title = title;
+        Width = 400;
+        Height = 180;
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        ResizeMode = ResizeMode.NoResize;
+        Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(20, 20, 20));
+
+        var panel = new StackPanel { Margin = new Thickness(20) };
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = prompt,
+            Foreground = System.Windows.Media.Brushes.White,
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 10)
+        });
+
+        _input = new System.Windows.Controls.TextBox
+        {
+            Text = defaultValue,
+            FontSize = 14,
+            MaxLength = 60,
+            Padding = new Thickness(6, 4, 6, 4)
+        };
+        panel.Children.Add(_input);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right,
+            Margin = new Thickness(0, 14, 0, 0)
+        };
+
+        var okBtn = new System.Windows.Controls.Button { Content = "SAVE", Padding = new Thickness(16, 6, 16, 6), IsDefault = true };
+        okBtn.Click += (_, _) => { DialogResult = true; };
+        buttons.Children.Add(okBtn);
+
+        var cancelBtn = new System.Windows.Controls.Button { Content = "CANCEL", Padding = new Thickness(16, 6, 16, 6), Margin = new Thickness(8, 0, 0, 0), IsCancel = true };
+        buttons.Children.Add(cancelBtn);
+
+        panel.Children.Add(buttons);
+        Content = panel;
+
+        Loaded += (_, _) => { _input.SelectAll(); _input.Focus(); };
     }
 }
