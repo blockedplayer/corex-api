@@ -38,7 +38,7 @@ var releaseDir = Environment.GetEnvironmentVariable("DATA_DIR")
 Directory.CreateDirectory(releaseDir);
 var releaseFile = Path.Combine(releaseDir, "release.json");
 {
-    var latestRelease = new ReleaseInfo("3.5.0", "https://github.com/blockedplayer/corex-releases/releases/download/v3.5.0/CoreX.Loader.exe");
+    var latestRelease = new ReleaseInfo("3.5.1", "https://github.com/blockedplayer/corex-releases/releases/download/v3.5.1/CoreX.Loader.exe");
     await File.WriteAllTextAsync(releaseFile, JsonSerializer.Serialize(latestRelease, new JsonSerializerOptions { WriteIndented = true }));
 }
 
