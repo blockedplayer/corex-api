@@ -22,7 +22,7 @@ namespace CoreX.Loader;
 
 public partial class MainWindow : Window
 {
-    private const string AppVersion = "4.2.1";
+    private const string AppVersion = "4.2.2";
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
     private readonly HttpClient _fastHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _pollTimer;
