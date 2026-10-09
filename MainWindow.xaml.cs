@@ -22,7 +22,7 @@ namespace CoreX.Loader;
 
 public partial class MainWindow : Window
 {
-    private const string AppVersion = "4.1.5";
+    private const string AppVersion = "4.1.6";
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(90) };
     private readonly HttpClient _fastHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
     private readonly DispatcherTimer _pollTimer;
@@ -384,14 +384,16 @@ public partial class MainWindow : Window
 
     // ═══════════════ GAME DETECTION ═══════════════
 
+    private bool _platformAutoDetected;
+
     private void PollGameStatus()
     {
         try
         {
-            string? foundName = FindGameProcess();
-            if (foundName != null)
+            var detection = DetectRunningGame();
+            if (detection != null)
             {
-                var procs = Process.GetProcessesByName(foundName);
+                var procs = Process.GetProcessesByName(detection.ProcessName);
                 int pid = procs.Length > 0 ? procs[0].Id : 0;
                 foreach (var p in procs) p.Dispose();
 
@@ -399,6 +401,12 @@ public partial class MainWindow : Window
                 GameStatusText.Text = "Game running";
                 HomeGameStatus.Text = "Running";
                 HomeGamePID.Text = pid > 0 ? $"PID: {pid}" : "PID: —";
+
+                if (!_platformAutoDetected)
+                {
+                    _platformAutoDetected = true;
+                    ApplyDetectedPlatform(detection);
+                }
 
                 if (!_autoInjected && !_autoInjecting && _licensed)
                     TriggerAutoInject();
@@ -409,6 +417,7 @@ public partial class MainWindow : Window
                 GameStatusText.Text = "Game not detected";
                 HomeGameStatus.Text = "Not Detected";
                 HomeGamePID.Text = "PID: —";
+                _platformAutoDetected = false;
             }
             QuickLaunchBtn.IsEnabled = _licensed;
         }
@@ -1450,7 +1459,46 @@ public partial class MainWindow : Window
         }
     }
 
-    private static readonly string[] GameProcessNames = { "cod22-cod", "cod", "cod22", "ModernWarfare", "cod22-cod-ms", "cod22-cod-bnet" };
+    private void ApplyDetectedPlatform(GameDetection detection)
+    {
+        if (GamePlatformCombo != null)
+        {
+            for (int i = 0; i < GamePlatformCombo.Items.Count; i++)
+            {
+                if (GamePlatformCombo.Items[i] is System.Windows.Controls.ComboBoxItem ci &&
+                    ci.Content?.ToString() == detection.Platform)
+                {
+                    GamePlatformCombo.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+
+        if (detection.GameDir != null && Directory.Exists(detection.GameDir) && GameDirBox != null)
+        {
+            var current = GameDirBox.Text?.Trim() ?? "";
+            if (!string.Equals(current, detection.GameDir, StringComparison.OrdinalIgnoreCase))
+            {
+                GameDirBox.Text = detection.GameDir;
+                AppendLog($"[*] Auto-detected {detection.Platform} — {detection.GameDir}");
+            }
+        }
+        else
+        {
+            AutoDetectGameDir(detection.Platform);
+        }
+
+        if (ProcessNameBox != null)
+        {
+            ProcessNameBox.Text = detection.ProcessName;
+        }
+    }
+
+    private static readonly string[] GameProcessNames = {
+        "cod22-cod", "cod", "cod22", "cod23-cod", "ModernWarfare",
+        "cod22-cod-ms", "cod23-cod-ms", "cod-ms",
+        "cod22-cod-bnet", "cod23-cod-bnet"
+    };
 
     private static string? FindGameProcess()
     {
@@ -1462,6 +1510,53 @@ public partial class MainWindow : Window
                 foreach (var p in procs) p.Dispose();
                 return name;
             }
+        }
+        return null;
+    }
+
+    private sealed record GameDetection(string ProcessName, string Platform, string? GameDir);
+
+    private static GameDetection? DetectRunningGame()
+    {
+        foreach (var name in GameProcessNames)
+        {
+            var procs = Process.GetProcessesByName(name);
+            if (procs.Length == 0) continue;
+
+            string? exePath = null;
+            try { exePath = procs[0].MainModule?.FileName; } catch { }
+            foreach (var p in procs) p.Dispose();
+
+            string platform = "Steam";
+            string? gameDir = null;
+
+            if (exePath != null)
+            {
+                gameDir = Path.GetDirectoryName(exePath);
+                var upper = exePath.ToUpperInvariant();
+                if (upper.Contains("MODIFIABLEWINDOWSAPPS") ||
+                    upper.Contains("WINDOWSAPPS") ||
+                    upper.Contains("XBOXGAMES") ||
+                    upper.Contains("WPSYSTEM"))
+                    platform = "Xbox (PC)";
+                else if (upper.Contains("STEAMAPPS") || upper.Contains("STEAMLIBRARY"))
+                    platform = "Steam";
+                else if (upper.Contains("BATTLE.NET") || upper.Contains("BLIZZARD"))
+                    platform = "Battle.net";
+                else if (name.EndsWith("-ms", StringComparison.OrdinalIgnoreCase))
+                    platform = "Xbox (PC)";
+                else if (name.EndsWith("-bnet", StringComparison.OrdinalIgnoreCase))
+                    platform = "Battle.net";
+            }
+            else
+            {
+                if (name.EndsWith("-ms", StringComparison.OrdinalIgnoreCase))
+                    platform = "Xbox (PC)";
+                else if (name.EndsWith("-bnet", StringComparison.OrdinalIgnoreCase))
+                    platform = "Battle.net";
+            }
+
+            return new GameDetection(name, platform, gameDir);
         }
         return null;
     }
@@ -1482,20 +1577,25 @@ public partial class MainWindow : Window
 
     private void DeployVCRuntime()
     {
-        var gameDir = GameDirBox?.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(gameDir) || !Directory.Exists(gameDir)) return;
-
         var runtimeFiles = new[] { "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll" };
-        foreach (var file in runtimeFiles)
+        var gameDir = GameDirBox?.Text?.Trim() ?? "";
+        var targets = new List<string> { EmbeddedBinDir };
+        if (!string.IsNullOrEmpty(gameDir) && Directory.Exists(gameDir))
+            targets.Add(gameDir);
+
+        foreach (var dir in targets)
         {
-            var src = Path.Combine(EmbeddedBinDir, file);
-            var dst = Path.Combine(gameDir, file);
-            try
+            foreach (var file in runtimeFiles)
             {
-                if (File.Exists(src) && !File.Exists(dst))
-                    File.Copy(src, dst, false);
+                var src = Path.Combine(EmbeddedBinDir, file);
+                var dst = Path.Combine(dir, file);
+                try
+                {
+                    if (File.Exists(src) && !File.Exists(dst))
+                        File.Copy(src, dst, false);
+                }
+                catch { }
             }
-            catch { }
         }
     }
 
@@ -1519,8 +1619,22 @@ public partial class MainWindow : Window
         try
         {
             EnsureFilesExtracted();
-            var platform = (GamePlatformCombo?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "Steam";
-            AutoDetectGameDir(platform);
+
+            var detection = DetectRunningGame();
+            string procName;
+            if (detection != null)
+            {
+                procName = detection.ProcessName;
+                ApplyDetectedPlatform(detection);
+                AppendLog($"[AUTO] Detected {detection.Platform} ({procName})");
+            }
+            else
+            {
+                var platform = (GamePlatformCombo?.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Content?.ToString() ?? "Steam";
+                AutoDetectGameDir(platform);
+                procName = FindGameProcess() ?? "cod22-cod";
+            }
+
             var injectorPath = FindFile("PYTExample.exe");
             var dllPath = FindFile("mw2.dll", "MW2.dll");
 
@@ -1534,9 +1648,8 @@ public partial class MainWindow : Window
                 return;
             }
 
-            AppendLog("[AUTO] Game detected — waiting for full screen...");
+            AppendLog("[AUTO] Waiting for full screen...");
 
-            var procName = FindGameProcess() ?? "cod22-cod";
             if (!await WaitForFullScreen(procName))
             {
                 AppendLog("[AUTO] Game closed before injection.");
@@ -2562,24 +2675,34 @@ public partial class MainWindow : Window
     {
         var candidates = new List<string>();
 
-        var modifiable = new[]
-        {
-            @"C:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
-            @"C:\Program Files\ModifiableWindowsApps\Call of Duty Modern Warfare II",
-            @"D:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
-            @"E:\Program Files\ModifiableWindowsApps\Call of Duty HQ",
-        };
-        candidates.AddRange(modifiable);
-
         try
         {
             foreach (var drive in DriveInfo.GetDrives())
             {
                 if (drive.DriveType != DriveType.Fixed) continue;
-                var xgp = Path.Combine(drive.Name, "XboxGames", "Call of Duty HQ", "Content");
-                candidates.Add(xgp);
-                var xgp2 = Path.Combine(drive.Name, "XboxGames", "Call of Duty Modern Warfare II", "Content");
-                candidates.Add(xgp2);
+                var root = drive.Name;
+                candidates.Add(Path.Combine(root, "Program Files", "ModifiableWindowsApps", "Call of Duty HQ"));
+                candidates.Add(Path.Combine(root, "Program Files", "ModifiableWindowsApps", "Call of Duty Modern Warfare II"));
+                candidates.Add(Path.Combine(root, "XboxGames", "Call of Duty HQ", "Content"));
+                candidates.Add(Path.Combine(root, "XboxGames", "Call of Duty Modern Warfare II", "Content"));
+                candidates.Add(Path.Combine(root, "WpSystem", "Call of Duty HQ"));
+                candidates.Add(Path.Combine(root, "WpSystem", "Call of Duty Modern Warfare II"));
+
+                try
+                {
+                    var modApps = Path.Combine(root, "Program Files", "ModifiableWindowsApps");
+                    if (Directory.Exists(modApps))
+                    {
+                        foreach (var dir in Directory.GetDirectories(modApps))
+                        {
+                            var name = Path.GetFileName(dir);
+                            if (name.Contains("Call of Duty", StringComparison.OrdinalIgnoreCase) ||
+                                name.Contains("COD", StringComparison.OrdinalIgnoreCase))
+                                candidates.Add(dir);
+                        }
+                    }
+                }
+                catch { }
             }
         }
         catch { }
@@ -3433,18 +3556,27 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrEmpty(GameDirBox.Text))
         {
-            var detected = DetectGameDirectory("Steam")
-                        ?? DetectGameDirectory("Battle.net")
-                        ?? DetectGameDirectory("Xbox (PC)");
-            if (detected != null)
+            var running = DetectRunningGame();
+            if (running != null)
             {
-                GameDirBox.Text = detected;
-                if (detected.Contains("Steam", StringComparison.OrdinalIgnoreCase))
-                    GamePlatformCombo.SelectedIndex = 0;
-                else if (detected.Contains("Battle", StringComparison.OrdinalIgnoreCase) || detected.Contains("Call of Duty", StringComparison.OrdinalIgnoreCase))
-                    GamePlatformCombo.SelectedIndex = 1;
-                else
-                    GamePlatformCombo.SelectedIndex = 2;
+                ApplyDetectedPlatform(running);
+            }
+            else
+            {
+                var detected = DetectGameDirectory("Steam")
+                            ?? DetectGameDirectory("Xbox (PC)")
+                            ?? DetectGameDirectory("Battle.net");
+                if (detected != null)
+                {
+                    GameDirBox.Text = detected;
+                    var upper = detected.ToUpperInvariant();
+                    if (upper.Contains("STEAM"))
+                        GamePlatformCombo.SelectedIndex = 0;
+                    else if (upper.Contains("MODIFIABLEWINDOWSAPPS") || upper.Contains("XBOXGAMES") || upper.Contains("WPSYSTEM"))
+                        GamePlatformCombo.SelectedIndex = 2;
+                    else
+                        GamePlatformCombo.SelectedIndex = 1;
+                }
             }
         }
     }
